@@ -9,6 +9,7 @@ on:
   pull_request:
     branches:
       - master
+      - kqcube/2606
 
 permissions:
   contents: read
