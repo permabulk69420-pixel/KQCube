@@ -134,6 +134,9 @@ Full game-camera head tracking is a later milestone. Do not sacrifice the workin
 
 ## Required implementation notes
 
+The first prototype's concrete implementation and bring-up record is in
+[`QUEST_OPENXR_IMPLEMENTATION.md`](QUEST_OPENXR_IMPLEMENTATION.md).
+
 Update this document or add `docs/QUEST_OPENXR_IMPLEMENTATION.md` with:
 
 - exact files changed;
