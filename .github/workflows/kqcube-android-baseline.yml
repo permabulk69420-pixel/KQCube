@@ -55,28 +55,12 @@ jobs:
             "cmake;3.22.1" \
             "ndk;29.0.14206865"
 
-      - name: Apply dual-eye diagnostic source override
+      - name: Apply Quest GLES stereo compatibility patch
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("Source/Core/VideoBackends/OGL/KQCubeOpenXR.cpp")
-          text = path.read_text(encoding="utf-8")
-          old_layer = "const u32 source_layer = source_layers >= 2 ? eye : 0;"
-          new_layer = "const u32 source_layer = 0;"
-          old_log = "Dolphin supplied stereo XFB layers: layer 0 left, layer 1 right"
-          new_log = "Diagnostic build: Dolphin allocated two XFB layers; duplicating layer 0 to both Quest eyes"
-
-          if text.count(old_layer) != 1:
-              raise SystemExit("Expected exactly one OpenXR eye-layer selection expression")
-          if text.count(old_log) != 1:
-              raise SystemExit("Expected exactly one OpenXR stereo-source log message")
-
-          text = text.replace(old_layer, new_layer).replace(old_log, new_log)
-          path.write_text(text, encoding="utf-8")
-          print("Applied layer-0 duplication diagnostic for both OpenXR eye swapchains")
-          PY
+          git apply --check Tools/KQCube/quest-gles-stereo.patch
+          git apply Tools/KQCube/quest-gles-stereo.patch
+          echo "Enabled OES/EXT geometry-shader stereo detection for Quest GLES"
 
       - name: Build debug APK
         working-directory: Source/Android
