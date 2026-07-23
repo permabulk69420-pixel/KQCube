@@ -21,6 +21,7 @@
 #include <string_view>
 #include <vector>
 
+#include "InputCommon/ControllerInterface/Touch/InputOverrider.h"
 #include "VideoBackends/OGL/OGLTexture.h"
 
 namespace OGL
@@ -41,6 +42,7 @@ jobject s_android_activity = nullptr;
 std::atomic<bool> s_requested{false};
 std::atomic<bool> s_presentation_active{false};
 std::atomic<bool> s_exit_requested{false};
+std::atomic<bool> s_presentation_failed{false};
 
 void SetPresentationActive(bool active)
 {
@@ -140,6 +142,22 @@ struct Swapchain
   std::vector<XrSwapchainImageOpenGLESKHR> images;
 };
 
+struct ControllerActions
+{
+  XrActionSet action_set = XR_NULL_HANDLE;
+  XrAction left_stick = XR_NULL_HANDLE;
+  XrAction right_stick = XR_NULL_HANDLE;
+  XrAction button_a = XR_NULL_HANDLE;
+  XrAction button_b = XR_NULL_HANDLE;
+  XrAction button_x = XR_NULL_HANDLE;
+  XrAction button_y = XR_NULL_HANDLE;
+  XrAction left_trigger = XR_NULL_HANDLE;
+  XrAction right_trigger = XR_NULL_HANDLE;
+  XrAction left_squeeze = XR_NULL_HANDLE;
+  XrAction right_squeeze = XR_NULL_HANDLE;
+  XrAction menu = XR_NULL_HANDLE;
+};
+
 struct SavedGLState
 {
   GLint read_framebuffer = 0;
@@ -185,6 +203,7 @@ void SetAndroidActivity(JNIEnv* env, jobject activity)
   env->GetJavaVM(&s_java_vm);
   s_android_activity = env->NewGlobalRef(activity);
   s_exit_requested.store(false, std::memory_order_release);
+  s_presentation_failed.store(false, std::memory_order_release);
   s_requested.store(s_android_activity != nullptr, std::memory_order_release);
   KQXR_LOGI("Quest activity selected; OpenXR will start after Dolphin creates its GLES context");
 }
@@ -217,6 +236,11 @@ bool ConsumeExitRequested()
 {
   return s_exit_requested.exchange(false, std::memory_order_acq_rel);
 }
+
+bool ConsumePresentationFailure()
+{
+  return s_presentation_failed.exchange(false, std::memory_order_acq_rel);
+}
 }  // namespace KQCubeOpenXRBridge
 
 struct KQCubeOpenXR::Impl
@@ -237,8 +261,12 @@ struct KQCubeOpenXR::Impl
       return true;
     }
     if (!session_running)
+    {
+      ClearControllerInputStates();
       return true;
+    }
 
+    SyncControllerInput();
     return RenderFrame(source, source_rect);
   }
 
@@ -247,6 +275,7 @@ struct KQCubeOpenXR::Impl
     if (!CopyAndroidContext(&java_vm, &activity))
     {
       KQXR_LOGE("OpenXR was requested without a live Quest activity");
+      s_presentation_failed.store(true, std::memory_order_release);
       failed = true;
       return false;
     }
@@ -255,6 +284,7 @@ struct KQCubeOpenXR::Impl
     {
       DeleteGlobalRef(java_vm, activity);
       activity = nullptr;
+      s_presentation_failed.store(true, std::memory_order_release);
       failed = true;
       return false;
     }
@@ -280,6 +310,12 @@ struct KQCubeOpenXR::Impl
       KQXR_LOGE("Unable to create GLES framebuffers for OpenXR presentation");
       FailInitialization();
       return false;
+    }
+
+    if (controller_actions.action_set != XR_NULL_HANDLE)
+    {
+      ciface::Touch::RegisterGameCubeInputOverrider(0);
+      input_registered = true;
     }
 
     initialized = true;
@@ -401,7 +437,7 @@ struct KQCubeOpenXR::Impl
     instance_info.applicationInfo.applicationVersion = 1;
     std::strncpy(instance_info.applicationInfo.engineName, "Dolphin", XR_MAX_ENGINE_NAME_SIZE - 1);
     instance_info.applicationInfo.engineVersion = 2606;
-    instance_info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
+    instance_info.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
     instance_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     instance_info.enabledExtensionNames = extensions.data();
     if (!XrOk(xrCreateInstance(&instance_info, &instance), "xrCreateInstance"))
@@ -465,6 +501,9 @@ struct KQCubeOpenXR::Impl
     if (!XrOk(xrCreateSession(instance, &session_info, &session), "xrCreateSession"))
       return false;
 
+    if (!CreateControllerActions())
+      KQXR_LOGW("Touch action setup failed; Android and paired controller input remain available");
+
     XrReferenceSpaceCreateInfo space_info{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     space_info.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     space_info.poseInReferenceSpace.orientation.w = 1.0f;
@@ -476,6 +515,254 @@ struct KQCubeOpenXR::Impl
 
     KQXR_LOGI("Created OpenXR session using Dolphin's GLES %d.%d context", major, minor);
     return true;
+  }
+
+  bool CreateAction(XrActionType type, const char* name, const char* localized_name,
+                    XrAction* action)
+  {
+    XrActionCreateInfo create_info{XR_TYPE_ACTION_CREATE_INFO};
+    create_info.actionType = type;
+    std::strncpy(create_info.actionName, name, XR_MAX_ACTION_NAME_SIZE - 1);
+    std::strncpy(create_info.localizedActionName, localized_name,
+                 XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
+    return XrOk(xrCreateAction(controller_actions.action_set, &create_info, action), name);
+  }
+
+  bool CreateControllerActions()
+  {
+    XrActionSetCreateInfo set_info{XR_TYPE_ACTION_SET_CREATE_INFO};
+    std::strncpy(set_info.actionSetName, "gamecube_controller", XR_MAX_ACTION_SET_NAME_SIZE - 1);
+    std::strncpy(set_info.localizedActionSetName, "GameCube Controller",
+                 XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE - 1);
+    if (!XrOk(xrCreateActionSet(instance, &set_info, &controller_actions.action_set),
+              "xrCreateActionSet(GameCube controller)"))
+    {
+      return false;
+    }
+
+    const bool created = CreateAction(XR_ACTION_TYPE_VECTOR2F_INPUT, "left_stick",
+                                      "GameCube Control Stick", &controller_actions.left_stick) &&
+                         CreateAction(XR_ACTION_TYPE_VECTOR2F_INPUT, "right_stick",
+                                      "GameCube C Stick", &controller_actions.right_stick) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_a", "GameCube A",
+                                      &controller_actions.button_a) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_b", "GameCube B",
+                                      &controller_actions.button_b) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_x", "GameCube X",
+                                      &controller_actions.button_x) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_y", "GameCube Y",
+                                      &controller_actions.button_y) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_trigger", "GameCube L",
+                                      &controller_actions.left_trigger) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "right_trigger", "GameCube R",
+                                      &controller_actions.right_trigger) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_squeeze", "GameCube Start",
+                                      &controller_actions.left_squeeze) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "right_squeeze", "GameCube Z",
+                                      &controller_actions.right_squeeze) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "GameCube Start",
+                                      &controller_actions.menu);
+    if (!created)
+    {
+      DestroyControllerActions();
+      return false;
+    }
+
+    struct BindingPath
+    {
+      XrAction action;
+      const char* path;
+    };
+    const std::array<BindingPath, 11> binding_paths{{
+        {controller_actions.left_stick, "/user/hand/left/input/thumbstick"},
+        {controller_actions.right_stick, "/user/hand/right/input/thumbstick"},
+        {controller_actions.button_a, "/user/hand/right/input/a/click"},
+        {controller_actions.button_b, "/user/hand/right/input/b/click"},
+        {controller_actions.button_x, "/user/hand/left/input/x/click"},
+        {controller_actions.button_y, "/user/hand/left/input/y/click"},
+        {controller_actions.left_trigger, "/user/hand/left/input/trigger/value"},
+        {controller_actions.right_trigger, "/user/hand/right/input/trigger/value"},
+        {controller_actions.left_squeeze, "/user/hand/left/input/squeeze/value"},
+        {controller_actions.right_squeeze, "/user/hand/right/input/squeeze/value"},
+        {controller_actions.menu, "/user/hand/left/input/menu/click"},
+    }};
+    std::array<XrActionSuggestedBinding, 11> bindings{};
+    for (size_t i = 0; i < binding_paths.size(); ++i)
+    {
+      bindings[i].action = binding_paths[i].action;
+      if (!XrOk(xrStringToPath(instance, binding_paths[i].path, &bindings[i].binding),
+                binding_paths[i].path))
+      {
+        DestroyControllerActions();
+        return false;
+      }
+    }
+
+    XrPath touch_profile = XR_NULL_PATH;
+    if (!XrOk(xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller",
+                             &touch_profile),
+              "Oculus Touch interaction profile"))
+    {
+      DestroyControllerActions();
+      return false;
+    }
+    XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+    suggested.interactionProfile = touch_profile;
+    suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+    suggested.suggestedBindings = bindings.data();
+    if (!XrOk(xrSuggestInteractionProfileBindings(instance, &suggested),
+              "xrSuggestInteractionProfileBindings(Oculus Touch)"))
+    {
+      DestroyControllerActions();
+      return false;
+    }
+
+    XrSessionActionSetsAttachInfo attach_info{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attach_info.countActionSets = 1;
+    attach_info.actionSets = &controller_actions.action_set;
+    if (!XrOk(xrAttachSessionActionSets(session, &attach_info), "xrAttachSessionActionSets"))
+    {
+      DestroyControllerActions();
+      return false;
+    }
+
+    KQXR_LOGI("Touch actions attached to GameCube controller 1");
+    return true;
+  }
+
+  bool ReadBooleanAction(XrAction action, bool* any_active) const
+  {
+    XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
+    get_info.action = action;
+    XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
+    if (XR_FAILED(xrGetActionStateBoolean(session, &get_info, &state)))
+      return false;
+    *any_active |= state.isActive == XR_TRUE;
+    return state.isActive == XR_TRUE && state.currentState == XR_TRUE;
+  }
+
+  float ReadFloatAction(XrAction action, bool* any_active) const
+  {
+    XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
+    get_info.action = action;
+    XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};
+    if (XR_FAILED(xrGetActionStateFloat(session, &get_info, &state)))
+      return 0.0f;
+    *any_active |= state.isActive == XR_TRUE;
+    return state.isActive == XR_TRUE ? state.currentState : 0.0f;
+  }
+
+  XrVector2f ReadVectorAction(XrAction action, bool* any_active) const
+  {
+    XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
+    get_info.action = action;
+    XrActionStateVector2f state{XR_TYPE_ACTION_STATE_VECTOR2F};
+    if (XR_FAILED(xrGetActionStateVector2f(session, &get_info, &state)))
+      return {};
+    *any_active |= state.isActive == XR_TRUE;
+    return state.isActive == XR_TRUE ? state.currentState : XrVector2f{};
+  }
+
+  static XrVector2f ApplyStickDeadzone(XrVector2f stick)
+  {
+    constexpr float deadzone = 0.15f;
+    const float length = std::sqrt(stick.x * stick.x + stick.y * stick.y);
+    if (length <= deadzone)
+      return {};
+    const float remapped_length = std::min(1.0f, (length - deadzone) / (1.0f - deadzone));
+    const float scale = remapped_length / length;
+    return {stick.x * scale, stick.y * scale};
+  }
+
+  void SyncControllerInput()
+  {
+    if (!input_registered || controller_actions.action_set == XR_NULL_HANDLE)
+      return;
+
+    const XrActiveActionSet active_set{controller_actions.action_set, XR_NULL_PATH};
+    XrActionsSyncInfo sync_info{XR_TYPE_ACTIONS_SYNC_INFO};
+    sync_info.countActiveActionSets = 1;
+    sync_info.activeActionSets = &active_set;
+    if (XR_FAILED(xrSyncActions(session, &sync_info)))
+    {
+      ClearControllerInputStates();
+      return;
+    }
+
+    bool any_active = false;
+    const XrVector2f left_stick =
+        ApplyStickDeadzone(ReadVectorAction(controller_actions.left_stick, &any_active));
+    const XrVector2f right_stick =
+        ApplyStickDeadzone(ReadVectorAction(controller_actions.right_stick, &any_active));
+    const bool button_a = ReadBooleanAction(controller_actions.button_a, &any_active);
+    const bool button_b = ReadBooleanAction(controller_actions.button_b, &any_active);
+    const bool button_x = ReadBooleanAction(controller_actions.button_x, &any_active);
+    const bool button_y = ReadBooleanAction(controller_actions.button_y, &any_active);
+    const float left_trigger = ReadFloatAction(controller_actions.left_trigger, &any_active);
+    const float right_trigger = ReadFloatAction(controller_actions.right_trigger, &any_active);
+    const float left_squeeze = ReadFloatAction(controller_actions.left_squeeze, &any_active);
+    const float right_squeeze = ReadFloatAction(controller_actions.right_squeeze, &any_active);
+    const bool menu = ReadBooleanAction(controller_actions.menu, &any_active);
+
+    if (!any_active)
+    {
+      ClearControllerInputStates();
+      return;
+    }
+
+    constexpr float digital_threshold = 0.45f;
+    using ciface::Touch::ControlID;
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_A_BUTTON, button_a);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_B_BUTTON, button_b);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_X_BUTTON, button_x);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_Y_BUTTON, button_y);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_Z_BUTTON, right_squeeze > digital_threshold);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_START_BUTTON,
+                                   menu || left_squeeze > digital_threshold);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_L_ANALOG, left_trigger);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_R_ANALOG, right_trigger);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_L_DIGITAL, left_trigger > digital_threshold);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_R_DIGITAL,
+                                   right_trigger > digital_threshold);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_MAIN_STICK_X, left_stick.x);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_MAIN_STICK_Y, left_stick.y);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_C_STICK_X, right_stick.x);
+    ciface::Touch::SetControlState(0, ControlID::GCPAD_C_STICK_Y, right_stick.y);
+
+    if (!logged_touch_active)
+    {
+      KQXR_LOGI("Touch input active: sticks, A/B/X/Y, L/R, right grip Z, left grip/menu Start");
+      logged_touch_active = true;
+    }
+  }
+
+  void ClearControllerInputStates() const
+  {
+    if (!input_registered)
+      return;
+
+    using ciface::Touch::ControlID;
+    constexpr std::array<ControlID, 14> controls{
+        ControlID::GCPAD_A_BUTTON,  ControlID::GCPAD_B_BUTTON,     ControlID::GCPAD_X_BUTTON,
+        ControlID::GCPAD_Y_BUTTON,  ControlID::GCPAD_Z_BUTTON,     ControlID::GCPAD_START_BUTTON,
+        ControlID::GCPAD_L_DIGITAL, ControlID::GCPAD_R_DIGITAL,    ControlID::GCPAD_L_ANALOG,
+        ControlID::GCPAD_R_ANALOG,  ControlID::GCPAD_MAIN_STICK_X, ControlID::GCPAD_MAIN_STICK_Y,
+        ControlID::GCPAD_C_STICK_X, ControlID::GCPAD_C_STICK_Y,
+    };
+    for (const ControlID control : controls)
+      ciface::Touch::ClearControlState(0, control);
+  }
+
+  void DestroyControllerActions()
+  {
+    if (input_registered)
+    {
+      ciface::Touch::UnregisterGameCubeInputOverrider(0);
+      input_registered = false;
+    }
+    if (controller_actions.action_set != XR_NULL_HANDLE)
+      xrDestroyActionSet(controller_actions.action_set);
+    controller_actions = {};
   }
 
   bool CreateSwapchains()
@@ -859,6 +1146,7 @@ struct KQCubeOpenXR::Impl
     activity = nullptr;
     owns_presentation = false;
     SetPresentationActive(false);
+    s_presentation_failed.store(true, std::memory_order_release);
     failed = true;
   }
 
@@ -883,6 +1171,8 @@ struct KQCubeOpenXR::Impl
       glDeleteFramebuffers(1, &draw_framebuffer);
     read_framebuffer = 0;
     draw_framebuffer = 0;
+
+    DestroyControllerActions();
 
     if (session_running && session != XR_NULL_HANDLE)
     {
@@ -960,6 +1250,7 @@ struct KQCubeOpenXR::Impl
   std::vector<XrViewConfigurationView> config_views;
   std::vector<XrView> views;
   std::vector<Swapchain> swapchains;
+  ControllerActions controller_actions;
 
   GLuint read_framebuffer = 0;
   GLuint draw_framebuffer = 0;
@@ -973,6 +1264,8 @@ struct KQCubeOpenXR::Impl
   bool logged_stereo_source = false;
   bool logged_view_failure = false;
   bool logged_valid_views = false;
+  bool input_registered = false;
+  bool logged_touch_active = false;
 };
 
 KQCubeOpenXR::KQCubeOpenXR() : m_impl(std::make_unique<Impl>())
@@ -1029,6 +1322,11 @@ bool IsPresentationActive()
 }
 
 bool ConsumeExitRequested()
+{
+  return false;
+}
+
+bool ConsumePresentationFailure()
 {
   return false;
 }

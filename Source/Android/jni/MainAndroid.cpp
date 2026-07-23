@@ -65,6 +65,7 @@
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/Present.h"
 #include "VideoCommon/VideoBackendBase.h"
+#include "VideoCommon/VideoConfig.h"
 
 #include "VideoBackends/OGL/KQCubeOpenXR.h"
 
@@ -602,8 +603,10 @@ static void Run(JNIEnv* env, std::unique_ptr<BootParameters>&& boot, bool riivol
     Config::ConfigChangeCallbackGuard config_guard;
     Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string{"OGL"});
     Config::SetCurrent(Config::GFX_PREFER_GLES, true);
+    Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::SideBySide);
+    Config::SetCurrent(Config::GFX_STEREO_PER_EYE_RESOLUTION_FULL, true);
     __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",
-                        "Forcing the OGL/GLES backend for this Quest boot");
+                        "Forcing OGL/GLES and Dolphin layered stereo for this Quest boot");
   }
 
   s_need_nonblocking_alert_msg = true;
@@ -629,6 +632,14 @@ static void Run(JNIEnv* env, std::unique_ptr<BootParameters>&& boot, bool riivol
   {
     s_update_main_frame_event.Wait();
     Core::HostDispatchJobs(Core::System::GetInstance());
+    if (OGL::KQCubeOpenXRBridge::ConsumePresentationFailure())
+    {
+      Config::ConfigChangeCallbackGuard config_guard;
+      Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::Off);
+      Config::SetCurrent(Config::GFX_STEREO_PER_EYE_RESOLUTION_FULL, false);
+      __android_log_print(ANDROID_LOG_WARN, "KQCube-OpenXR",
+                          "OpenXR bootstrap failed; restored monoscopic Android presentation");
+    }
     if (OGL::KQCubeOpenXRBridge::ConsumeExitRequested())
     {
       __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",

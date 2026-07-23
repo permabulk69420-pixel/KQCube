@@ -44,5 +44,6 @@ void ClearAndroidActivity(JNIEnv* env, jobject activity);
 bool IsRequested();
 bool IsPresentationActive();
 bool ConsumeExitRequested();
+bool ConsumePresentationFailure();
 }  // namespace KQCubeOpenXRBridge
 }  // namespace OGL

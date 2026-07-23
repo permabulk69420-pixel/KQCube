@@ -36,7 +36,7 @@ if(ANDROID)
     XR_USE_GRAPHICS_API_OPENGL_ES
     XR_USE_PLATFORM_ANDROID
   )
-  target_link_libraries(videoogl PRIVATE OpenXR::openxr_loader android EGL GLESv3 log)
+  target_link_libraries(videoogl PRIVATE OpenXR::openxr_loader inputcommon android EGL GLESv3 log)
 endif()
 if(X11_FOUND)
   target_link_libraries(videoogl PRIVATE PkgConfig::X11)
