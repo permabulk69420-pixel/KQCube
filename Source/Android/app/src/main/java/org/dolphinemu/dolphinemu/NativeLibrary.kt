@@ -5,6 +5,7 @@
 
 package org.dolphinemu.dolphinemu
 
+import android.app.Activity
 import android.content.res.Resources
 import android.view.Surface
 import android.widget.Toast
@@ -321,6 +322,18 @@ object NativeLibrary {
 
     @JvmStatic
     external fun GenerateNewStatisticsId()
+
+    /** Selects the isolated OpenXR presentation path for the lifetime of a Quest activity. */
+    @JvmStatic
+    external fun InitializeOpenXR(activity: Activity)
+
+    /** Signals that the Quest activity is leaving; native teardown remains on the render thread. */
+    @JvmStatic
+    external fun ShutdownOpenXR(activity: Activity)
+
+    /** True once OpenXR has safely taken ownership of the current GLES context. */
+    @JvmStatic
+    external fun IsOpenXRPresentationActive(): Boolean
 
     /**
      * Begins emulation.

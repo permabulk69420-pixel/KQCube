@@ -67,7 +67,7 @@ import org.dolphinemu.dolphinemu.utils.RateLimiter
 import org.dolphinemu.dolphinemu.utils.ThemeHelper
 import kotlin.math.roundToInt
 
-class EmulationActivity : AppCompatActivity(), ThemeProvider {
+open class EmulationActivity : AppCompatActivity(), ThemeProvider {
     private var emulationFragment: EmulationFragment? = null
 
     private lateinit var settings: Settings
@@ -1111,7 +1111,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
             riivolution: Boolean
         ) {
             ignoreLaunchRequests = true
-            val launcher = Intent(activity, EmulationActivity::class.java)
+            val launcher = Intent(activity, emulationActivityClass(activity))
             launcher.putExtra(EXTRA_SELECTED_GAMES, filePaths)
             launcher.putExtra(EXTRA_RIIVOLUTION, riivolution)
             activity.startActivity(launcher)
@@ -1165,7 +1165,7 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
 
         private fun launchSystemMenuWithoutChecks(activity: FragmentActivity) {
             ignoreLaunchRequests = true
-            val launcher = Intent(activity, EmulationActivity::class.java)
+            val launcher = Intent(activity, emulationActivityClass(activity))
             launcher.putExtra(EXTRA_SYSTEM_MENU, true)
             activity.startActivity(launcher)
         }
@@ -1174,6 +1174,13 @@ class EmulationActivity : AppCompatActivity(), ThemeProvider {
         fun stopIgnoringLaunchRequests() {
             ignoreLaunchRequests = false
         }
+
+        private fun emulationActivityClass(activity: FragmentActivity) =
+            if (QuestEmulationActivity.isSupported(activity)) {
+                QuestEmulationActivity::class.java
+            } else {
+                EmulationActivity::class.java
+            }
 
         private fun areCoordinatesOutside(view: View?, x: Float, y: Float): Boolean {
             if (view == null)

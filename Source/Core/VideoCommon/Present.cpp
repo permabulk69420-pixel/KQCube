@@ -943,6 +943,10 @@ void Presenter::Present(PresentInfo* present_info)
     RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
   }
 
+  // OpenXR consumes the unflattened XFB texture. A stock backend simply returns false here.
+  if (m_xfb_entry)
+    g_gfx->PresentToOpenXR(m_xfb_entry->texture.get(), AdjustForCustomCrop(m_xfb_rect));
+
   if (m_onscreen_ui)
   {
     m_onscreen_ui->Finalize();

@@ -146,6 +146,10 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback {
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         Log.debug("[EmulationFragment] Surface changed. Resolution: $width x $height")
+        if (NativeLibrary.IsOpenXRPresentationActive()) {
+            Log.debug("[EmulationFragment] OpenXR owns presentation; ignoring Android surface change.")
+            return
+        }
         NativeLibrary.SurfaceChanged(holder.surface)
         if (runWhenSurfaceIsValid) {
             runWithValidSurface()
@@ -154,6 +158,10 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback {
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         Log.debug("[EmulationFragment] Surface destroyed.")
+        if (NativeLibrary.IsOpenXRPresentationActive()) {
+            Log.debug("[EmulationFragment] OpenXR owns presentation; retaining the GLES context.")
+            return
+        }
         NativeLibrary.SurfaceDestroyed()
         runWhenSurfaceIsValid = true
     }

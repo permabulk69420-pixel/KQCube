@@ -1,5 +1,7 @@
 add_library(videoogl
   GPUTimer.h
+  KQCubeOpenXR.cpp
+  KQCubeOpenXR.h
   OGLBoundingBox.cpp
   OGLBoundingBox.h
   OGLConfig.cpp
@@ -28,6 +30,14 @@ add_library(videoogl
 )
 
 target_link_libraries(videoogl PUBLIC common videocommon)
+if(ANDROID)
+  find_package(OpenXR REQUIRED CONFIG)
+  target_compile_definitions(videoogl PRIVATE
+    XR_USE_GRAPHICS_API_OPENGL_ES
+    XR_USE_PLATFORM_ANDROID
+  )
+  target_link_libraries(videoogl PRIVATE OpenXR::openxr_loader android EGL GLESv3 log)
+endif()
 if(X11_FOUND)
   target_link_libraries(videoogl PRIVATE PkgConfig::X11)
 endif()

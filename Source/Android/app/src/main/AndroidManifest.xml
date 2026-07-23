@@ -19,6 +19,10 @@
     <uses-feature
         android:name="android.software.leanback"
         android:required="false"/>
+    <uses-feature
+        android:name="android.hardware.vr.headtracking"
+        android:required="false"
+        android:version="1"/>
 
     <uses-feature android:glEsVersion="0x00030000"/>
 
@@ -48,6 +52,9 @@
         <meta-data
             android:name="android.max_aspect"
             android:value="2.1"/>
+        <meta-data
+            android:name="com.oculus.supportedDevices"
+            android:value="all"/>
         <profileable
             android:shell="true"
             tools:targetApi="29" />
@@ -96,6 +103,25 @@
             android:exported="false"
             android:theme="@style/Theme.Dolphin.Main"
             android:preferMinimalPostProcessing="true"/>
+
+        <!-- Quest-only entry point. Phones and Android TV continue to use EmulationActivity. -->
+        <activity
+            android:name=".activities.QuestEmulationActivity"
+            android:configChanges="density|keyboard|keyboardHidden|orientation|screenSize|uiMode"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:preferMinimalPostProcessing="true"
+            android:resizeableActivity="false"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.Dolphin.Main">
+            <meta-data
+                android:name="com.oculus.vr.focusaware"
+                android:value="true"/>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="com.oculus.intent.category.VR"/>
+            </intent-filter>
+        </activity>
 
         <activity
             android:name=".activities.CustomFilePickerActivity"

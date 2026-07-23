@@ -11,6 +11,7 @@ class GLContext;
 namespace OGL
 {
 class OGLFramebuffer;
+class KQCubeOpenXR;
 class OGLTexture;
 
 class OGLGfx final : public AbstractGfx
@@ -61,6 +62,8 @@ public:
                              u32 groupsize_z, u32 groups_x, u32 groups_y, u32 groups_z) override;
   bool BindBackbuffer(const ClearColor& clear_color = {}) override;
   void PresentBackbuffer() override;
+  bool PresentToOpenXR(const AbstractTexture* source_texture,
+                       const MathUtil::Rectangle<int>& source_rc) override;
 
   void BeginUtilityDrawing() override;
   void EndUtilityDrawing() override;
@@ -103,6 +106,8 @@ private:
   void ApplyBlendingState(const BlendingState state);
 
   std::unique_ptr<GLContext> m_main_gl_context;
+  // Keep the parked EGL context alive until all ordinary OGL framebuffer members are destroyed.
+  std::unique_ptr<KQCubeOpenXR> m_kqcube_openxr;
   std::unique_ptr<OGLFramebuffer> m_system_framebuffer;
   std::array<const OGLTexture*, VideoCommon::MAX_PIXEL_SHADER_SAMPLERS> m_bound_textures{};
   std::array<const AbstractTexture*, VideoCommon::MAX_COMPUTE_SHADER_SAMPLERS>

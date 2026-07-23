@@ -110,6 +110,14 @@ public:
   // Presents the backbuffer to the window system, or "swaps buffers".
   virtual void PresentBackbuffer() {}
 
+  // Optional direct OpenXR presentation hook. Backends that do not implement it keep the normal
+  // window-system path untouched.
+  virtual bool PresentToOpenXR(const AbstractTexture* source_texture,
+                               const MathUtil::Rectangle<int>& source_rc)
+  {
+    return false;
+  }
+
   // Shader modules/objects.
   virtual std::unique_ptr<AbstractShader>
   CreateShaderFromSource(ShaderStage stage, std::string_view source,
