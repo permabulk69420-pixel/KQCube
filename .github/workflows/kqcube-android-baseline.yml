@@ -1,0 +1,82 @@
+name: KQCube Android Baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - "agent/**"
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kqcube-android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-android:
+    name: Build Dolphin 2606 Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out repository and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            Source/Android/**/*.gradle*
+            Source/Android/gradle/wrapper/gradle-wrapper.properties
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Dolphin 2606 Android toolchain
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "cmake;3.22.1" \
+            "ndk;29.0.14206865"
+
+      - name: Build debug APK
+        working-directory: Source/Android
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Verify APK and write checksum
+        id: apk
+        shell: bash
+        run: |
+          APK="$(find Source/Android/app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/'
+          sha256sum "$APK" > "$APK.sha256"
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$APK.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KQCube-android-debug-${{ github.sha }}
+          path: |
+            ${{ steps.apk.outputs.apk_path }}
+            ${{ steps.apk.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 14
