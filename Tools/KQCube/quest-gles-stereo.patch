@@ -1,0 +1,52 @@
+diff --git a/Source/Core/VideoBackends/OGL/OGLConfig.h b/Source/Core/VideoBackends/OGL/OGLConfig.h
+--- a/Source/Core/VideoBackends/OGL/OGLConfig.h
++++ b/Source/Core/VideoBackends/OGL/OGLConfig.h
+@@ -64,6 +64,8 @@ struct VideoConfig
+   GlslVersion eSupportedGLSLVersion;
+   bool bSupportViewportFloat;
+   bool bSupportsAEP;
++  bool bSupportsOESGeometryShader;
++  bool bSupportsEXTGeometryShader;
+   bool bSupportsDebug;
+   bool bSupportsCopySubImage;
+   EsPointSizeType SupportedESPointSize;
+diff --git a/Source/Core/VideoBackends/OGL/OGLConfig.cpp b/Source/Core/VideoBackends/OGL/OGLConfig.cpp
+--- a/Source/Core/VideoBackends/OGL/OGLConfig.cpp
++++ b/Source/Core/VideoBackends/OGL/OGLConfig.cpp
+@@ -386,6 +386,10 @@ bool PopulateConfig(GLContext* m_main_gl_context)
+         GLExtensions::Supports("GL_EXT_texture_buffer") ? EsTexbufType::TexbufExt :
+                                                           EsTexbufType::TexbufNone;
++    g_ogl_config.bSupportsOESGeometryShader =
++        GLExtensions::Supports("GL_OES_geometry_shader");
++    g_ogl_config.bSupportsEXTGeometryShader =
++        GLExtensions::Supports("GL_EXT_geometry_shader");
+ 
+     supports_glsl_cache = true;
+     g_ogl_config.bSupportsGLSync = true;
+@@ -418,7 +422,9 @@ bool PopulateConfig(GLContext* m_main_gl_context)
+       g_ogl_config.bSupportsAEP = GLExtensions::Supports("GL_ANDROID_extension_pack_es31a");
+       g_backend_info.bSupportsBindingLayout = true;
+       g_ogl_config.bSupportsImageLoadStore = true;
+-      g_backend_info.bSupportsGeometryShaders = g_ogl_config.bSupportsAEP;
++      g_backend_info.bSupportsGeometryShaders =
++          g_ogl_config.bSupportsAEP || g_ogl_config.bSupportsOESGeometryShader ||
++          g_ogl_config.bSupportsEXTGeometryShader;
+       g_backend_info.bSupportsComputeShaders = true;
+       g_backend_info.bSupportsGSInstancing =
+           g_backend_info.bSupportsGeometryShaders &&
+diff --git a/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp b/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp
+--- a/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp
++++ b/Source/Core/VideoBackends/OGL/ProgramShaderCache.cpp
+@@ -831,7 +831,11 @@ void ProgramShaderCache::CreateHeader()
+        v < Glsl400 && g_backend_info.bSupportsSSAA ? "#extension GL_ARB_sample_shading : enable" :
+                                                      "",
+        SupportedESPointSize,
+-       g_ogl_config.bSupportsAEP ? "#extension GL_ANDROID_extension_pack_es31a : enable" : "",
++       g_ogl_config.bSupportsAEP ? "#extension GL_ANDROID_extension_pack_es31a : enable" :
++       g_ogl_config.bSupportsOESGeometryShader ?
++           "#extension GL_OES_geometry_shader : enable" :
++       g_ogl_config.bSupportsEXTGeometryShader ?
++           "#extension GL_EXT_geometry_shader : enable" : "",
+        v < Glsl140 && g_backend_info.bSupportsPaletteConversion ?
+            "#extension GL_ARB_texture_buffer_object : enable" :
+            "",
