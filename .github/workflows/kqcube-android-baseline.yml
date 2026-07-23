@@ -55,13 +55,6 @@ jobs:
             "cmake;3.22.1" \
             "ndk;29.0.14206865"
 
-      - name: Apply Quest GLES stereo compatibility patch
-        shell: bash
-        run: |
-          git apply --check Tools/KQCube/quest-gles-stereo.patch
-          git apply Tools/KQCube/quest-gles-stereo.patch
-          echo "Enabled OES/EXT geometry-shader stereo detection for Quest GLES"
-
       - name: Build debug APK
         working-directory: Source/Android
         run: |

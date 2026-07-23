@@ -17,12 +17,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <vector>
 
+#include "Common/ScopeGuard.h"
 #include "InputCommon/ControllerInterface/Touch/InputOverrider.h"
 #include "VideoBackends/OGL/OGLTexture.h"
+#include "VideoCommon/VideoConfig.h"
 
 namespace OGL
 {
@@ -140,6 +144,7 @@ struct Swapchain
   int32_t width = 0;
   int32_t height = 0;
   std::vector<XrSwapchainImageOpenGLESKHR> images;
+  std::vector<std::unique_ptr<OGLFramebuffer>> framebuffers;
 };
 
 struct ControllerActions
@@ -158,38 +163,6 @@ struct ControllerActions
   XrAction menu = XR_NULL_HANDLE;
 };
 
-struct SavedGLState
-{
-  GLint read_framebuffer = 0;
-  GLint draw_framebuffer = 0;
-  GLint viewport[4]{};
-  GLboolean scissor_enabled = GL_FALSE;
-  GLboolean color_mask[4]{};
-  GLfloat clear_color[4]{};
-
-  void Capture()
-  {
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_framebuffer);
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_framebuffer);
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    scissor_enabled = glIsEnabled(GL_SCISSOR_TEST);
-    glGetBooleanv(GL_COLOR_WRITEMASK, color_mask);
-    glGetFloatv(GL_COLOR_CLEAR_VALUE, clear_color);
-  }
-
-  void Restore() const
-  {
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(read_framebuffer));
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(draw_framebuffer));
-    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-    glColorMask(color_mask[0], color_mask[1], color_mask[2], color_mask[3]);
-    glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
-    if (scissor_enabled == GL_TRUE)
-      glEnable(GL_SCISSOR_TEST);
-    else
-      glDisable(GL_SCISSOR_TEST);
-  }
-};
 }  // namespace
 
 namespace KQCubeOpenXRBridge
@@ -247,7 +220,8 @@ struct KQCubeOpenXR::Impl
   ~Impl() { Shutdown(); }
 
   bool Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
-               float source_aspect)
+               float source_aspect, std::string_view source_type,
+               const EyeRenderCallback& render_eye)
   {
     if (failed)
       return false;
@@ -267,7 +241,7 @@ struct KQCubeOpenXR::Impl
     }
 
     SyncControllerInput();
-    return RenderFrame(source, source_rect, source_aspect);
+    return RenderFrame(source, source_rect, source_aspect, source_type, render_eye);
   }
 
   bool Initialize()
@@ -289,6 +263,13 @@ struct KQCubeOpenXR::Impl
       return false;
     }
 
+    const char* const renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const char* const version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    KQXR_LOGI("GLES renderer=%s, version=%s, geometry shaders=%s, stereo mode=%d",
+              renderer != nullptr ? renderer : "unknown", version != nullptr ? version : "unknown",
+              g_backend_info.bSupportsGeometryShaders ? "supported" : "unsupported",
+              static_cast<int>(g_ActiveConfig.stereo_mode));
+
     // Surface callbacks must stop touching the Android EGL surface from this point onward. If any
     // OpenXR call below fails, FailInitialization restores the exact window binding first.
     owns_presentation = true;
@@ -296,18 +277,6 @@ struct KQCubeOpenXR::Impl
 
     if (!CreateInstanceAndSession() || !CreateSwapchains())
     {
-      FailInitialization();
-      return false;
-    }
-
-    while (glGetError() != GL_NO_ERROR)
-    {
-    }
-    glGenFramebuffers(1, &read_framebuffer);
-    glGenFramebuffers(1, &draw_framebuffer);
-    if (read_framebuffer == 0 || draw_framebuffer == 0 || glGetError() != GL_NO_ERROR)
-    {
-      KQXR_LOGE("Unable to create GLES framebuffers for OpenXR presentation");
       FailInitialization();
       return false;
     }
@@ -823,6 +792,18 @@ struct KQCubeOpenXR::Impl
       return false;
     }
 
+    const AbstractTextureFormat framebuffer_format =
+        selected_format == GL_RGB10_A2 ? AbstractTextureFormat::RGB10_A2 :
+                                        AbstractTextureFormat::RGBA8;
+    GLint previous_read_framebuffer = 0;
+    GLint previous_draw_framebuffer = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &previous_read_framebuffer);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &previous_draw_framebuffer);
+    Common::ScopeGuard restore_framebuffer_bindings([&] {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(previous_read_framebuffer));
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, static_cast<GLuint>(previous_draw_framebuffer));
+    });
+
     swapchains.resize(view_count);
     for (uint32_t eye = 0; eye < view_count; ++eye)
     {
@@ -861,14 +842,53 @@ struct KQCubeOpenXR::Impl
       {
         return false;
       }
-      KQXR_LOGI("Eye %u swapchain: %dx%d, %u images", eye, swapchain.width, swapchain.height,
-                image_count);
+      if (image_count == 0)
+      {
+        KQXR_LOGE("Eye %u swapchain contains no images", eye);
+        return false;
+      }
+
+      swapchain.framebuffers.reserve(image_count);
+      for (uint32_t image_index = 0; image_index < image_count; ++image_index)
+      {
+        while (glGetError() != GL_NO_ERROR)
+        {
+        }
+
+        GLuint framebuffer = 0;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               swapchain.images[image_index].image, 0);
+        constexpr GLenum draw_buffer = GL_COLOR_ATTACHMENT0;
+        glDrawBuffers(1, &draw_buffer);
+
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        const GLenum error = glGetError();
+        if (framebuffer == 0 || status != GL_FRAMEBUFFER_COMPLETE || error != GL_NO_ERROR)
+        {
+          KQXR_LOGE("Eye %u image %u framebuffer creation failed: fbo=%u status=0x%x error=0x%x",
+                    eye, image_index, framebuffer, status, error);
+          if (framebuffer != 0)
+            glDeleteFramebuffers(1, &framebuffer);
+          return false;
+        }
+
+        swapchain.framebuffers.emplace_back(std::make_unique<OGLFramebuffer>(
+            nullptr, nullptr, std::vector<AbstractTexture*>{}, framebuffer_format,
+            AbstractTextureFormat::Undefined, static_cast<u32>(swapchain.width),
+            static_cast<u32>(swapchain.height), 1, 1, framebuffer));
+      }
+      KQXR_LOGI("Eye %u swapchain: %dx%d, %u images, format=0x%llx; persistent FBOs complete", eye,
+                swapchain.width, swapchain.height, image_count,
+                static_cast<unsigned long long>(selected_format));
     }
     return true;
   }
 
   bool RenderFrame(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
-                   float source_aspect)
+                   float source_aspect, std::string_view source_type,
+                   const EyeRenderCallback& render_eye)
   {
     XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState frame_state{XR_TYPE_FRAME_STATE};
@@ -894,15 +914,25 @@ struct KQCubeOpenXR::Impl
     {
       LocateViews(frame_state.predictedDisplayTime);
 
-      SavedGLState saved_state;
-      saved_state.Capture();
-      glDisable(GL_SCISSOR_TEST);
-      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
       const u32 source_layers = source.GetLayers();
+      if (source_type != logged_source_type || source.GetWidth() != logged_source_width ||
+          source.GetHeight() != logged_source_height || source_layers != logged_source_layers)
+      {
+        KQXR_LOGI(
+            "Presenter source=%.*s texture=%u target=0x%x type=%u size=%ux%u layers=%u samples=%u "
+            "rect=(%d,%d)-(%d,%d)",
+            static_cast<int>(source_type.size()), source_type.data(), source.GetGLTextureId(),
+            source.GetGLTarget(), static_cast<unsigned int>(source.GetConfig().type),
+            source.GetWidth(), source.GetHeight(), source_layers, source.GetSamples(),
+            source_rect.left, source_rect.top, source_rect.right, source_rect.bottom);
+        logged_source_type = source_type;
+        logged_source_width = source.GetWidth();
+        logged_source_height = source.GetHeight();
+        logged_source_layers = source_layers;
+      }
       if (source_layers < 2 && !logged_mono_fallback)
       {
-        KQXR_LOGW("Dolphin supplied one XFB layer; duplicating layer 0 to both eyes");
+        KQXR_LOGW("Dolphin supplied a mono presentation source; layer 0 is the only safe fallback");
         logged_mono_fallback = true;
       }
       else if (source_layers >= 2 && !logged_stereo_source)
@@ -927,24 +957,37 @@ struct KQCubeOpenXR::Impl
         image_wait.timeout = XR_INFINITE_DURATION;
         if (!XrOk(xrWaitSwapchainImage(swapchain.handle, &image_wait), "xrWaitSwapchainImage"))
         {
+          XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+          XrOk(xrReleaseSwapchainImage(swapchain.handle, &release_info),
+               "xrReleaseSwapchainImage(after wait failure)");
           exit_requested = true;
           rendered = false;
           break;
         }
+        if (!logged_eye_acquire[eye])
+        {
+          KQXR_LOGI("Eye %u acquired and waited for swapchain image %u", eye, image_index);
+          logged_eye_acquire[eye] = true;
+        }
 
         const u32 source_layer = source_layers >= 2 ? eye : 0;
         const bool eye_rendered =
-            BlitEye(source, source_rect, source_layer, swapchain, image_index);
+            RenderEye(eye, source_layer, swapchain, image_index, render_eye);
         XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         const bool image_released = XrOk(xrReleaseSwapchainImage(swapchain.handle, &release_info),
                                          "xrReleaseSwapchainImage");
+        if (image_released && !logged_eye_release[eye])
+        {
+          KQXR_LOGI("Eye %u released swapchain image %u after drawing source layer %u", eye,
+                    image_index, source_layer);
+          logged_eye_release[eye] = true;
+        }
         if (!eye_rendered || !image_released)
         {
           rendered = false;
           break;
         }
       }
-      saved_state.Restore();
 
       if (rendered)
       {
@@ -986,12 +1029,12 @@ struct KQCubeOpenXR::Impl
     return true;
   }
 
-  bool BlitEye(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
-               u32 source_layer, const Swapchain& swapchain, uint32_t image_index)
+  bool RenderEye(uint32_t eye, u32 source_layer, const Swapchain& swapchain, uint32_t image_index,
+                 const EyeRenderCallback& render_eye)
   {
-    if (image_index >= swapchain.images.size())
+    if (image_index >= swapchain.images.size() || image_index >= swapchain.framebuffers.size())
     {
-      KQXR_LOGE("Runtime returned invalid swapchain image index %u", image_index);
+      KQXR_LOGE("Runtime returned invalid eye %u swapchain image index %u", eye, image_index);
       return false;
     }
 
@@ -999,42 +1042,49 @@ struct KQCubeOpenXR::Impl
     {
     }
 
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, read_framebuffer);
-    const GLenum source_target = source.GetGLTarget();
-    if (source_target == GL_TEXTURE_2D || source_target == GL_TEXTURE_2D_MULTISAMPLE)
-    {
-      glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, source_target,
-                             source.GetGLTextureId(), 0);
-    }
-    else
-    {
-      glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, source.GetGLTextureId(),
-                                0, static_cast<GLint>(source_layer));
-    }
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_framebuffer);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           swapchain.images[image_index].image, 0);
-    if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
-        glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-    {
-      KQXR_LOGE("Incomplete GLES framebuffer while presenting eye %u", source_layer);
-      return false;
-    }
-
-    glViewport(0, 0, swapchain.width, swapchain.height);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    // Dolphin's presentation rectangle is top-origin. Invert the OpenGL destination Y coordinates
-    // so the runtime's bottom-origin swapchain image is upright in the headset.
-    glBlitFramebuffer(source_rect.left, source_rect.top, source_rect.right, source_rect.bottom, 0,
-                      swapchain.height, swapchain.width, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    OGLFramebuffer* const framebuffer = swapchain.framebuffers[image_index].get();
+    const bool eye_rendered = render_eye && render_eye(eye, source_layer, framebuffer);
     glFlush();
 
+    GLint read_binding = 0;
+    GLint draw_binding = 0;
+    GLint draw_buffer = 0;
+    GLint viewport[4]{};
+    GLint scissor_box[4]{};
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_binding);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw_binding);
+    glGetIntegerv(GL_DRAW_BUFFER0, &draw_buffer);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, scissor_box);
+    const GLboolean scissor_enabled = glIsEnabled(GL_SCISSOR_TEST);
+    const GLenum read_status = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+    const GLenum draw_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
     const GLenum error = glGetError();
-    if (error != GL_NO_ERROR)
+    const bool correct_binding =
+        read_binding == static_cast<GLint>(framebuffer->GetFBO()) &&
+        draw_binding == static_cast<GLint>(framebuffer->GetFBO());
+    const bool complete =
+        read_status == GL_FRAMEBUFFER_COMPLETE && draw_status == GL_FRAMEBUFFER_COMPLETE;
+
+    if (eye < logged_eye_draw.size() && !logged_eye_draw[eye])
     {
-      KQXR_LOGE("GLES blit for source layer %u failed: 0x%x", source_layer, error);
+      KQXR_LOGI(
+          "Eye %u drew source layer %u -> image %u FBO %u: read=%d/0x%x draw=%d/0x%x "
+          "drawBuffer=0x%x viewport=(%d,%d %dx%d) scissor=%s (%d,%d %dx%d) glError=0x%x",
+          eye, source_layer, image_index, framebuffer->GetFBO(), read_binding, read_status,
+          draw_binding, draw_status, draw_buffer, viewport[0], viewport[1], viewport[2],
+          viewport[3], scissor_enabled == GL_TRUE ? "on" : "off", scissor_box[0], scissor_box[1],
+          scissor_box[2], scissor_box[3], error);
+      logged_eye_draw[eye] = true;
+    }
+
+    if (!eye_rendered || !correct_binding || !complete || error != GL_NO_ERROR)
+    {
+      KQXR_LOGE(
+          "Eye %u draw failed for source layer %u: callback=%d binding=%d complete=%d "
+          "readStatus=0x%x drawStatus=0x%x glError=0x%x",
+          eye, source_layer, eye_rendered, correct_binding, complete, read_status, draw_status,
+          error);
       return false;
     }
     return true;
@@ -1154,7 +1204,7 @@ struct KQCubeOpenXR::Impl
 
   void Shutdown()
   {
-    if (read_framebuffer != 0 || draw_framebuffer != 0 || instance != XR_NULL_HANDLE)
+    if (instance != XR_NULL_HANDLE)
       KQXR_LOGI("Destroying OpenXR presenter on Dolphin's render thread");
     DestroyOpenXRObjects();
     ReleaseParking(true);
@@ -1167,13 +1217,6 @@ struct KQCubeOpenXR::Impl
 
   void DestroyOpenXRObjects()
   {
-    if (read_framebuffer != 0)
-      glDeleteFramebuffers(1, &read_framebuffer);
-    if (draw_framebuffer != 0)
-      glDeleteFramebuffers(1, &draw_framebuffer);
-    read_framebuffer = 0;
-    draw_framebuffer = 0;
-
     if (session_running && session != XR_NULL_HANDLE)
     {
       if (session_state == XR_SESSION_STATE_STOPPING)
@@ -1184,6 +1227,7 @@ struct KQCubeOpenXR::Impl
     }
     for (Swapchain& swapchain : swapchains)
     {
+      swapchain.framebuffers.clear();
       if (swapchain.handle != XR_NULL_HANDLE)
         xrDestroySwapchain(swapchain.handle);
     }
@@ -1253,9 +1297,14 @@ struct KQCubeOpenXR::Impl
   std::vector<Swapchain> swapchains;
   ControllerActions controller_actions;
 
-  GLuint read_framebuffer = 0;
-  GLuint draw_framebuffer = 0;
   uint64_t submitted_frames = 0;
+  u32 logged_source_width = 0;
+  u32 logged_source_height = 0;
+  u32 logged_source_layers = std::numeric_limits<u32>::max();
+  std::string logged_source_type;
+  std::array<bool, 2> logged_eye_acquire{};
+  std::array<bool, 2> logged_eye_draw{};
+  std::array<bool, 2> logged_eye_release{};
   bool initialized = false;
   bool failed = false;
   bool owns_presentation = false;
@@ -1276,9 +1325,10 @@ KQCubeOpenXR::KQCubeOpenXR() : m_impl(std::make_unique<Impl>())
 KQCubeOpenXR::~KQCubeOpenXR() = default;
 
 bool KQCubeOpenXR::Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
-                           float source_aspect)
+                           float source_aspect, std::string_view source_type,
+                           const EyeRenderCallback& render_eye)
 {
-  return m_impl->Present(source, source_rect, source_aspect);
+  return m_impl->Present(source, source_rect, source_aspect, source_type, render_eye);
 }
 
 bool KQCubeOpenXR::OwnsPresentation() const
@@ -1301,7 +1351,8 @@ KQCubeOpenXR::KQCubeOpenXR() : m_impl(std::make_unique<Impl>())
 
 KQCubeOpenXR::~KQCubeOpenXR() = default;
 
-bool KQCubeOpenXR::Present(const OGLTexture&, const MathUtil::Rectangle<int>&, float)
+bool KQCubeOpenXR::Present(const OGLTexture&, const MathUtil::Rectangle<int>&, float,
+                           std::string_view, const EyeRenderCallback&)
 {
   return false;
 }

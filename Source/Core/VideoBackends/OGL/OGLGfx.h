@@ -63,7 +63,9 @@ public:
   bool BindBackbuffer(const ClearColor& clear_color = {}) override;
   void PresentBackbuffer() override;
   bool PresentToOpenXR(const AbstractTexture* source_texture,
-                       const MathUtil::Rectangle<int>& source_rc, float source_aspect) override;
+                       const MathUtil::Rectangle<int>& source_rc, float source_aspect,
+                       std::string_view source_type,
+                       const OpenXREyeRenderCallback& render_eye) override;
 
   void BeginUtilityDrawing() override;
   void EndUtilityDrawing() override;

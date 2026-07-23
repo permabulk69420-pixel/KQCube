@@ -438,7 +438,9 @@ void OGLGfx::PresentBackbuffer()
 }
 
 bool OGLGfx::PresentToOpenXR(const AbstractTexture* source_texture,
-                             const MathUtil::Rectangle<int>& source_rc, float source_aspect)
+                             const MathUtil::Rectangle<int>& source_rc, float source_aspect,
+                             std::string_view source_type,
+                             const OpenXREyeRenderCallback& render_eye)
 {
   if (!KQCubeOpenXRBridge::IsRequested() &&
       (!m_kqcube_openxr || !m_kqcube_openxr->OwnsPresentation()))
@@ -449,7 +451,11 @@ bool OGLGfx::PresentToOpenXR(const AbstractTexture* source_texture,
   if (!m_kqcube_openxr)
     m_kqcube_openxr = std::make_unique<KQCubeOpenXR>();
   return m_kqcube_openxr->Present(*static_cast<const OGLTexture*>(source_texture), source_rc,
-                                  source_aspect);
+                                  source_aspect, source_type,
+                                  [&render_eye](u32 eye, u32 source_layer,
+                                                OGLFramebuffer* framebuffer) {
+                                    return render_eye(eye, source_layer, framebuffer);
+                                  });
 }
 
 void OGLGfx::OnConfigChanged(u32 bits)

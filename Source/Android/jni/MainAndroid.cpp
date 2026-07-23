@@ -605,8 +605,10 @@ static void Run(JNIEnv* env, std::unique_ptr<BootParameters>&& boot, bool riivol
     Config::SetCurrent(Config::GFX_PREFER_GLES, true);
     Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::SideBySide);
     Config::SetCurrent(Config::GFX_STEREO_PER_EYE_RESOLUTION_FULL, true);
+    Config::SetCurrent(Config::GFX_HACK_SKIP_XFB_COPY_TO_RAM, true);
+    Config::SetCurrent(Config::GFX_HACK_DISABLE_COPY_TO_VRAM, false);
     __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",
-                        "Forcing OGL/GLES and Dolphin layered stereo for this Quest boot");
+                        "Forcing OGL/GLES, layered stereo, and VRAM XFB copies for this Quest boot");
   }
 
   s_need_nonblocking_alert_msg = true;

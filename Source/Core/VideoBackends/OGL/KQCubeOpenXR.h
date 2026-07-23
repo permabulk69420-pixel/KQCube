@@ -3,7 +3,9 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <string_view>
 
 #include "Common/MathUtil.h"
 
@@ -13,6 +15,7 @@
 
 namespace OGL
 {
+class OGLFramebuffer;
 class OGLTexture;
 
 // Quest/OpenXR presentation is intentionally contained in the OpenGL backend. The rest of
@@ -20,6 +23,9 @@ class OGLTexture;
 class KQCubeOpenXR final
 {
 public:
+  using EyeRenderCallback =
+      std::function<bool(u32 eye, u32 source_layer, OGLFramebuffer* target)>;
+
   KQCubeOpenXR();
   ~KQCubeOpenXR();
 
@@ -27,7 +33,8 @@ public:
   KQCubeOpenXR& operator=(const KQCubeOpenXR&) = delete;
 
   bool Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
-               float source_aspect);
+               float source_aspect, std::string_view source_type,
+               const EyeRenderCallback& render_eye);
   bool OwnsPresentation() const;
 
 private:

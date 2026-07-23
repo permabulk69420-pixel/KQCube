@@ -9,7 +9,9 @@
 #include "VideoCommon/RenderState.h"
 
 #include <array>
+#include <functional>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 class AbstractFramebuffer;
@@ -41,6 +43,8 @@ class ShaderIncluder;
 }  // namespace VideoCommon
 
 using ClearColor = std::array<float, 4>;
+using OpenXREyeRenderCallback =
+    std::function<bool(u32 eye, u32 source_layer, AbstractFramebuffer* target)>;
 
 // AbstractGfx is the root of Dolphin's Graphics API abstraction layer.
 //
@@ -113,7 +117,9 @@ public:
   // Optional direct OpenXR presentation hook. Backends that do not implement it keep the normal
   // window-system path untouched.
   virtual bool PresentToOpenXR(const AbstractTexture* source_texture,
-                               const MathUtil::Rectangle<int>& source_rc, float source_aspect)
+                               const MathUtil::Rectangle<int>& source_rc, float source_aspect,
+                               std::string_view source_type,
+                               const OpenXREyeRenderCallback& render_eye)
   {
     return false;
   }
