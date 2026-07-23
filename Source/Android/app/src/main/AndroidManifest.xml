@@ -34,6 +34,20 @@
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA"/>
     <uses-permission android:name="android.permission.VIBRATE"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR"/>
+    <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM"/>
+
+    <!-- Make the Khronos Android loader's runtime broker and services visible on Android 11+. -->
+    <queries>
+        <provider
+            android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker"/>
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRRuntimeService"/>
+        </intent>
+        <intent>
+            <action android:name="org.khronos.openxr.OpenXRApiLayerService"/>
+        </intent>
+    </queries>
 
     <application
         android:name=".DolphinApplication"
@@ -183,21 +197,7 @@
             android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/nnf_provider_paths"/>
+                android:resource="@xml/file_provider_paths"/>
         </provider>
-
-        <provider
-            android:name=".features.DocumentProvider"
-            android:authorities="${applicationId}.user"
-            android:grantUriPermissions="true"
-            android:exported="true"
-            android:permission="android.permission.MANAGE_DOCUMENTS"
-            android:enabled="@bool/enableDocumentProvider">
-            <intent-filter>
-                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
-            </intent-filter>
-        </provider>
-
     </application>
-
 </manifest>
