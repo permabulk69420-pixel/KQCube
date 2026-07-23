@@ -13,6 +13,7 @@ android {
         viewBinding = true
         buildConfig = true
         resValues = true
+        prefab = true
     }
 
     compileOptions {
@@ -150,6 +151,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     implementation(libs.filepicker)
+
+    // Khronos' Android loader is consumed by the isolated KQCube OpenXR presenter through Prefab.
+    implementation("org.khronos.openxr:openxr_loader_for_android:1.1.61")
 }
 
 fun getGitVersion(): String {

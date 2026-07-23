@@ -8,6 +8,7 @@
 #include "Common/GL/GLUtil.h"
 #include "Common/Logging/LogManager.h"
 
+#include "VideoBackends/OGL/KQCubeOpenXR.h"
 #include "VideoBackends/OGL/OGLConfig.h"
 #include "VideoBackends/OGL/OGLPipeline.h"
 #include "VideoBackends/OGL/OGLShader.h"
@@ -430,8 +431,31 @@ void OGLGfx::PresentBackbuffer()
     }
   }
 
-  // Swap the back and front buffers, presenting the image.
-  m_main_gl_context->Swap();
+  // OpenXR uses the same context on a pbuffer/surfaceless binding, so the stale Android window
+  // surface must never be swapped while XR owns presentation.
+  if (!m_kqcube_openxr || !m_kqcube_openxr->OwnsPresentation())
+    m_main_gl_context->Swap();
+}
+
+bool OGLGfx::PresentToOpenXR(const AbstractTexture* source_texture,
+                             const MathUtil::Rectangle<int>& source_rc, float source_aspect,
+                             std::string_view source_type,
+                             const OpenXREyeRenderCallback& render_eye)
+{
+  if (!KQCubeOpenXRBridge::IsRequested() &&
+      (!m_kqcube_openxr || !m_kqcube_openxr->OwnsPresentation()))
+  {
+    return false;
+  }
+
+  if (!m_kqcube_openxr)
+    m_kqcube_openxr = std::make_unique<KQCubeOpenXR>();
+  return m_kqcube_openxr->Present(*static_cast<const OGLTexture*>(source_texture), source_rc,
+                                  source_aspect, source_type,
+                                  [&render_eye](u32 eye, u32 source_layer,
+                                                OGLFramebuffer* framebuffer) {
+                                    return render_eye(eye, source_layer, framebuffer);
+                                  });
 }
 
 void OGLGfx::OnConfigChanged(u32 bits)

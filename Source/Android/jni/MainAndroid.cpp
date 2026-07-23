@@ -22,6 +22,7 @@
 #include "Common/CPUDetect.h"
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
+#include "Common/Config/Config.h"
 #include "Common/Event.h"
 #include "Common/FileUtil.h"
 #include "Common/Flag.h"
@@ -37,6 +38,8 @@
 #include "Core/Boot/Boot.h"
 #include "Core/BootManager.h"
 #include "Core/CommonTitles.h"
+#include "Core/Config/GraphicsSettings.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigLoaders/GameConfigLoader.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
@@ -62,6 +65,9 @@
 #include "VideoCommon/OnScreenDisplay.h"
 #include "VideoCommon/Present.h"
 #include "VideoCommon/VideoBackendBase.h"
+#include "VideoCommon/VideoConfig.h"
+
+#include "VideoBackends/OGL/KQCubeOpenXR.h"
 
 #include "jni/AndroidCommon/AndroidCommon.h"
 #include "jni/AndroidCommon/IDCache.h"
@@ -440,6 +446,13 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_SurfaceChang
                                                                                    jclass,
                                                                                    jobject surf)
 {
+  if (OGL::KQCubeOpenXRBridge::IsPresentationActive())
+  {
+    __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",
+                        "Ignoring native Android surface change while OpenXR owns presentation");
+    return;
+  }
+
   std::lock_guard<std::mutex> guard(s_surface_lock);
 
   s_surf = ANativeWindow_fromSurface(env, surf);
@@ -455,6 +468,13 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_SurfaceChang
 JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_SurfaceDestroyed(JNIEnv*,
                                                                                      jclass)
 {
+  if (OGL::KQCubeOpenXRBridge::IsPresentationActive())
+  {
+    __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",
+                        "Retaining native GLES context across Android surface destruction");
+    return;
+  }
+
   {
     // If emulation continues running without a valid surface, we will probably crash,
     // so pause emulation until we get a valid surface again. EmulationFragment handles resuming.
@@ -524,6 +544,25 @@ JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_Initialize(J
   AchievementManager::GetInstance().Init(nullptr);
 }
 
+JNIEXPORT void JNICALL
+Java_org_dolphinemu_dolphinemu_NativeLibrary_InitializeOpenXR(JNIEnv* env, jclass, jobject activity)
+{
+  OGL::KQCubeOpenXRBridge::SetAndroidActivity(env, activity);
+}
+
+JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_ShutdownOpenXR(JNIEnv* env,
+                                                                                   jclass,
+                                                                                   jobject activity)
+{
+  OGL::KQCubeOpenXRBridge::ClearAndroidActivity(env, activity);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_dolphinemu_dolphinemu_NativeLibrary_IsOpenXRPresentationActive(JNIEnv*, jclass)
+{
+  return OGL::KQCubeOpenXRBridge::IsPresentationActive() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT void JNICALL Java_org_dolphinemu_dolphinemu_NativeLibrary_ReportStartToAnalytics(JNIEnv*,
                                                                                            jclass)
 {
@@ -558,6 +597,20 @@ static void Run(JNIEnv* env, std::unique_ptr<BootParameters>&& boot, bool riivol
                                           volume.GetDiscNumber()));
   }
 
+  const bool openxr_requested = OGL::KQCubeOpenXRBridge::IsRequested();
+  if (openxr_requested)
+  {
+    Config::ConfigChangeCallbackGuard config_guard;
+    Config::SetCurrent(Config::MAIN_GFX_BACKEND, std::string{"OGL"});
+    Config::SetCurrent(Config::GFX_PREFER_GLES, true);
+    Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::SideBySide);
+    Config::SetCurrent(Config::GFX_STEREO_PER_EYE_RESOLUTION_FULL, true);
+    Config::SetCurrent(Config::GFX_HACK_SKIP_XFB_COPY_TO_RAM, true);
+    Config::SetCurrent(Config::GFX_HACK_DISABLE_COPY_TO_VRAM, false);
+    __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",
+                        "Forcing OGL/GLES, layered stereo, and VRAM XFB copies for this Quest boot");
+  }
+
   s_need_nonblocking_alert_msg = true;
   std::unique_lock<std::mutex> surface_guard(s_surface_lock);
 
@@ -581,10 +634,36 @@ static void Run(JNIEnv* env, std::unique_ptr<BootParameters>&& boot, bool riivol
   {
     s_update_main_frame_event.Wait();
     Core::HostDispatchJobs(Core::System::GetInstance());
+    if (OGL::KQCubeOpenXRBridge::ConsumePresentationFailure())
+    {
+      Config::ConfigChangeCallbackGuard config_guard;
+      Config::SetCurrent(Config::GFX_STEREO_MODE, StereoMode::Off);
+      Config::SetCurrent(Config::GFX_STEREO_PER_EYE_RESOLUTION_FULL, false);
+      __android_log_print(ANDROID_LOG_WARN, "KQCube-OpenXR",
+                          "OpenXR bootstrap failed; restored monoscopic Android presentation");
+    }
+    if (OGL::KQCubeOpenXRBridge::ConsumeExitRequested())
+    {
+      __android_log_print(ANDROID_LOG_INFO, "KQCube-OpenXR",
+                          "OpenXR requested a clean emulation exit");
+      Core::Stop(Core::System::GetInstance());
+    }
   }
 
   s_game_metadata_is_valid = false;
   Core::Shutdown(Core::System::GetInstance());
+
+  // XR surface callbacks are deliberately suppressed while the GLES context is parked. Release
+  // the retained ANativeWindow only after the video backend has destroyed the OpenXR session.
+  if (openxr_requested)
+  {
+    std::lock_guard guard(s_surface_lock);
+    if (s_surf != nullptr)
+    {
+      ANativeWindow_release(s_surf);
+      s_surf = nullptr;
+    }
+  }
 
   env->CallStaticVoidMethod(IDCache::GetNativeLibraryClass(),
                             IDCache::GetFinishEmulationActivity());

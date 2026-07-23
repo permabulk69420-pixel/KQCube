@@ -1845,8 +1845,12 @@ RcTcacheEntry TextureCacheBase::GetXFBTexture(u32 address, u32 width, u32 height
     return entry;
   }
 
-  // Create a new VRAM texture, and fill it with the data from guest RAM.
-  entry = AllocateCacheEntry(TextureConfig(width, height, 1, 1, 1, AbstractTextureFormat::RGBA8,
+  // Create a new VRAM texture, and fill it with the data from guest RAM. Stereo EFB/XFB copies use
+  // one array layer per eye, so the RAM reconstruction must retain the same layer count before
+  // StitchXFBCopy overlays any still-valid VRAM copies.
+  const u32 xfb_layers = g_framebuffer_manager->GetEFBLayers();
+  entry = AllocateCacheEntry(TextureConfig(width, height, 1, xfb_layers, 1,
+                                           AbstractTextureFormat::RGBA8,
                                            AbstractTextureFlag_RenderTarget,
                                            AbstractTextureType::Texture_2DArray));
 
@@ -1869,6 +1873,16 @@ RcTcacheEntry TextureCacheBase::GetXFBTexture(u32 address, u32 width, u32 height
     CheckTempSize(decoded_size);
     TexDecoder_DecodeXFB(m_temp, src_data, width, height, stride);
     entry->texture->Load(0, width, height, width, m_temp, decoded_size);
+  }
+
+  // Guest RAM contains a single conventional XFB image. Seed any additional eye layers with that
+  // image so untouched regions remain usable; the genuine stereo VRAM layers are copied over them
+  // immediately below wherever an EFB-to-XFB copy is still available.
+  const MathUtil::Rectangle<int> full_rect = entry->texture->GetRect();
+  for (u32 layer = 1; layer < xfb_layers; ++layer)
+  {
+    entry->texture->CopyRectangleFromTexture(entry->texture.get(), full_rect, 0, 0, full_rect,
+                                             layer, 0);
   }
 
   // Stitch any VRAM copies into the new RAM copy.

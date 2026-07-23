@@ -14,6 +14,7 @@
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 
 #include "Present.h"
+#include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/AbstractGfx.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
@@ -941,6 +942,51 @@ void Presenter::Present(PresentInfo* present_info)
     AdjustRectanglesToFitBounds(&render_target_rc, &render_source_rc, m_backbuffer_width,
                                 m_backbuffer_height);
     RenderXFBToScreen(render_target_rc, m_xfb_entry->texture.get(), render_source_rc);
+  }
+
+  // OpenXR consumes the unflattened XFB texture. A stock backend simply returns false here.
+  if (m_xfb_entry)
+  {
+    // CalculateDrawAspectRatio includes the packing adjustment used by Dolphin's flattened stereo
+    // backbuffer. OpenXR receives one layer per eye, so undo that adjustment before sizing its
+    // quad.
+    float openxr_aspect = CalculateDrawAspectRatio(false);
+    if (g_ActiveConfig.stereo_per_eye_resolution_full)
+    {
+      if (g_ActiveConfig.stereo_mode == StereoMode::SideBySide)
+        openxr_aspect *= 0.5f;
+      else if (g_ActiveConfig.stereo_mode == StereoMode::TopAndBottom)
+        openxr_aspect *= 2.0f;
+    }
+    const MathUtil::Rectangle<int> openxr_source_rect = AdjustForCustomCrop(m_xfb_rect);
+    const AbstractTexture* const openxr_source = m_xfb_entry->texture.get();
+    const std::string_view source_type =
+        m_xfb_entry->is_xfb_container ?
+            (m_xfb_entry->references.empty() ? "ram-decoded-xfb" :
+                                               "ram-decoded-xfb+vram-stitch") :
+        m_xfb_entry->is_xfb_copy ? "vram-xfb-copy" :
+        m_xfb_entry->is_efb_copy ? "efb-copy-cache-entry" :
+                                   "texture-cache-entry";
+
+    // dolphinEV's working OpenXR lifecycle draws while the acquired runtime framebuffer is
+    // current. Keep that ordering, but explicitly select Dolphin's left/right texture layer
+    // through the ordinary presentation shader rather than attaching a presumed final layer to a
+    // temporary read FBO.
+    AbstractFramebuffer* const previous_framebuffer = g_gfx->GetCurrentFramebuffer();
+    g_gfx->PresentToOpenXR(
+        openxr_source, openxr_source_rect, openxr_aspect, source_type,
+        [this, openxr_source, openxr_source_rect](u32, u32 source_layer,
+                                                  AbstractFramebuffer* target) {
+          if (target == nullptr || source_layer >= openxr_source->GetLayers())
+            return false;
+
+          g_gfx->SetAndClearFramebuffer(target, {{0.0f, 0.0f, 0.0f, 1.0f}});
+          m_post_processor->BlitFromTexture(target->GetRect(), openxr_source_rect, openxr_source,
+                                            static_cast<int>(source_layer));
+          return g_gfx->GetCurrentFramebuffer() == target;
+        });
+    if (previous_framebuffer != nullptr && g_gfx->GetCurrentFramebuffer() != previous_framebuffer)
+      g_gfx->SetFramebuffer(previous_framebuffer);
   }
 
   if (m_onscreen_ui)

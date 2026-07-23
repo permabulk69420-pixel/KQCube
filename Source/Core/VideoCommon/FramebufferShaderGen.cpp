@@ -266,12 +266,16 @@ std::string GeneratePassthroughGeometryShader(u32 num_tex, u32 num_colors)
                "void main()\n"
                "{{\n"
                "  for (int j = 0; j < 2; j++)\n"
-               "  {{\n"
-               "    gl_Layer = j;\n");
+               "  {{\n");
 
     // We have to explicitly unroll this loop otherwise the GL compiler gets cranky.
     for (u32 v = 0; v < 3; v++)
     {
+      // All output variables — including gl_Layer — become undefined after EmitVertex(),
+      // so the layer must be rewritten for every vertex. Desktop NVIDIA happens to
+      // preserve it; strict drivers (Adreno GLES) really do reset it, which sent both
+      // eye passes to layer 0 (right view overwriting left, right eye black).
+      code.Write("    gl_Layer = j;\n");
       code.Write("    gl_Position = gl_in[{}].gl_Position;\n", v);
       for (u32 i = 0; i < num_tex; i++)
       {
@@ -417,15 +421,28 @@ std::string GenerateEFBPokeVertexShader()
   return code.GetBuffer();
 }
 
-std::string GenerateFormatConversionShader(EFBReinterpretType convtype, u32 samples)
+std::string GenerateFormatConversionShader(EFBReinterpretType convtype, u32 samples,
+                                           bool multiview)
 {
   ShaderCode code;
+  // Under VK_KHR_multiview there is no layer-expanding GS; the view index selects the
+  // source layer instead of the interpolated v_tex0.z.
+  if (multiview)
+    code.Write("#extension GL_EXT_multiview : require\n");
   EmitSamplerDeclarations(code, 0, 1, samples > 1);
   EmitPixelMainDeclaration(code, 1, 0, "float4",
 
                            "");
-  code.Write("{{\n"
-             "  int layer = int(v_tex0.z);\n");
+  if (multiview)
+  {
+    code.Write("{{\n"
+               "  int layer = int(gl_ViewIndex);\n");
+  }
+  else
+  {
+    code.Write("{{\n"
+               "  int layer = int(v_tex0.z);\n");
+  }
   code.Write("  int3 coords = int3(int2(gl_FragCoord.xy), layer);\n");
 
   if (samples == 1)
@@ -643,6 +660,22 @@ std::string GenerateEFBRestorePixelShader()
   code.Write("  gl_FragDepth = ");
   EmitSampleTexture(code, 1, "v_tex0");
   code.Write(".r;\n"
+             "}}\n");
+  return code.GetBuffer();
+}
+
+std::string GenerateEFBCoverageRestorePixelShader(bool multiview)
+{
+  ShaderCode code;
+  if (multiview && GetAPIType() == APIType::Vulkan)
+    code.Write("#extension GL_EXT_multiview : require\n");
+  EmitSamplerDeclarations(code, 0, 1, false);
+  EmitPixelMainDeclaration(code, 1, 0);
+  code.Write("{{\n"
+             "  ocol0 = ");
+  EmitSampleTexture(code, 0,
+                    multiview ? "float3(v_tex0.xy, float(gl_ViewIndex))" : "v_tex0");
+  code.Write(";\n"
              "}}\n");
   return code.GetBuffer();
 }
