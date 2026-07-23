@@ -26,7 +26,8 @@ public:
   KQCubeOpenXR(const KQCubeOpenXR&) = delete;
   KQCubeOpenXR& operator=(const KQCubeOpenXR&) = delete;
 
-  bool Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect);
+  bool Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
+               float source_aspect);
   bool OwnsPresentation() const;
 
 private:

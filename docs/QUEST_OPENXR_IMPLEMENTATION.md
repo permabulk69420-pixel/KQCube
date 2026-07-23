@@ -21,10 +21,12 @@ Android packaging and lifecycle:
 - `Source/Android/app/build.gradle.kts`
   - enables Prefab and adds Khronos' Android OpenXR loader `1.1.61`;
 - `Source/Android/app/src/main/AndroidManifest.xml`
-  - makes VR head tracking optional and declares the isolated Quest activity plus Meta metadata;
+  - makes VR head tracking optional and declares the isolated Quest activity, Meta metadata and
+    Khronos immersive-HMD intent category;
 - `Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/activities/EmulationActivity.kt`
   - remains the stock implementation, but is open for the thin Quest subclass and selects that
-    subclass only on VR-headtracking devices;
+    subclass only on VR-headtracking devices; explicit Quest launches carry the same immersive-HMD
+    action and categories as the manifest;
 - `Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/activities/QuestEmulationActivity.kt`
   - requests and releases the native OpenXR path around the stock activity lifecycle;
 - `Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/NativeLibrary.kt`
@@ -102,7 +104,9 @@ GL texture to `KQCubeOpenXR`.
 
 The runtime gets one single-sample GLES swapchain per eye at the recommended Quest dimensions. Each
 frame acquires and waits for both images, attaches the XFB texture layer to a read FBO, attaches the
-OpenXR image to a draw FBO and copies with `glBlitFramebuffer`:
+OpenXR image to a draw FBO and copies with `glBlitFramebuffer`. The destination Y coordinates are
+inverted while copying from Dolphin's top-origin presentation rectangle into OpenGL's bottom-origin
+swapchain image:
 
 | OpenXR eye | Dolphin XFB layer |
 | --- | --- |
@@ -113,8 +117,10 @@ If an XFB source contains only one layer, layer 0 is copied to both eyes and a o
 warning is written to logcat. The code does not split a flattened side-by-side screenshot.
 
 The two eye images are submitted as eye-specific `XrCompositionLayerQuad` layers on the same
-2.4-metre-wide screen, two metres forward in `LOCAL` space. `xrLocateViews` validates and logs live
-head tracking; the compositor supplies the orientation-relative view of the fixed screen.
+2.4-metre-wide screen, two metres forward in `LOCAL` space. Quad height uses Dolphin's VI-aware
+display aspect ratio after undoing the flattened side-by-side packing adjustment. `xrLocateViews`
+validates and logs live head tracking; the compositor supplies the orientation-relative view of the
+fixed screen.
 
 ## Touch controller path
 

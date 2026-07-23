@@ -438,7 +438,7 @@ void OGLGfx::PresentBackbuffer()
 }
 
 bool OGLGfx::PresentToOpenXR(const AbstractTexture* source_texture,
-                             const MathUtil::Rectangle<int>& source_rc)
+                             const MathUtil::Rectangle<int>& source_rc, float source_aspect)
 {
   if (!KQCubeOpenXRBridge::IsRequested() &&
       (!m_kqcube_openxr || !m_kqcube_openxr->OwnsPresentation()))
@@ -448,7 +448,8 @@ bool OGLGfx::PresentToOpenXR(const AbstractTexture* source_texture,
 
   if (!m_kqcube_openxr)
     m_kqcube_openxr = std::make_unique<KQCubeOpenXR>();
-  return m_kqcube_openxr->Present(*static_cast<const OGLTexture*>(source_texture), source_rc);
+  return m_kqcube_openxr->Present(*static_cast<const OGLTexture*>(source_texture), source_rc,
+                                  source_aspect);
 }
 
 void OGLGfx::OnConfigChanged(u32 bits)

@@ -113,7 +113,7 @@ public:
   // Optional direct OpenXR presentation hook. Backends that do not implement it keep the normal
   // window-system path untouched.
   virtual bool PresentToOpenXR(const AbstractTexture* source_texture,
-                               const MathUtil::Rectangle<int>& source_rc)
+                               const MathUtil::Rectangle<int>& source_rc, float source_aspect)
   {
     return false;
   }

@@ -63,7 +63,7 @@ public:
   bool BindBackbuffer(const ClearColor& clear_color = {}) override;
   void PresentBackbuffer() override;
   bool PresentToOpenXR(const AbstractTexture* source_texture,
-                       const MathUtil::Rectangle<int>& source_rc) override;
+                       const MathUtil::Rectangle<int>& source_rc, float source_aspect) override;
 
   void BeginUtilityDrawing() override;
   void EndUtilityDrawing() override;

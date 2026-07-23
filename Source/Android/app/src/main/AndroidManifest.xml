@@ -118,8 +118,9 @@
                 android:name="com.oculus.vr.focusaware"
                 android:value="true"/>
             <intent-filter>
-                <action android:name="android.intent.action.VIEW"/>
-                <category android:name="com.oculus.intent.category.VR"/>
+                <action android:name="org.dolphinemu.dolphinemu.action.QUEST_OPENXR_GAME"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD"/>
             </intent-filter>
         </activity>
 

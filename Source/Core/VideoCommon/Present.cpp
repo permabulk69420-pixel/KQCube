@@ -945,7 +945,21 @@ void Presenter::Present(PresentInfo* present_info)
 
   // OpenXR consumes the unflattened XFB texture. A stock backend simply returns false here.
   if (m_xfb_entry)
-    g_gfx->PresentToOpenXR(m_xfb_entry->texture.get(), AdjustForCustomCrop(m_xfb_rect));
+  {
+    // CalculateDrawAspectRatio includes the packing adjustment used by Dolphin's flattened stereo
+    // backbuffer. OpenXR receives one layer per eye, so undo that adjustment before sizing its
+    // quad.
+    float openxr_aspect = CalculateDrawAspectRatio(false);
+    if (g_ActiveConfig.stereo_per_eye_resolution_full)
+    {
+      if (g_ActiveConfig.stereo_mode == StereoMode::SideBySide)
+        openxr_aspect *= 0.5f;
+      else if (g_ActiveConfig.stereo_mode == StereoMode::TopAndBottom)
+        openxr_aspect *= 2.0f;
+    }
+    g_gfx->PresentToOpenXR(m_xfb_entry->texture.get(), AdjustForCustomCrop(m_xfb_rect),
+                           openxr_aspect);
+  }
 
   if (m_onscreen_ui)
   {

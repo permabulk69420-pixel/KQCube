@@ -1019,6 +1019,10 @@ open class EmulationActivity : AppCompatActivity(), ThemeProvider {
     companion object {
         private const val BACKSTACK_NAME_MENU = "menu"
         private const val BACKSTACK_NAME_SUBMENU = "submenu"
+        private const val ACTION_QUEST_OPENXR_GAME =
+            "org.dolphinemu.dolphinemu.action.QUEST_OPENXR_GAME"
+        private const val CATEGORY_IMMERSIVE_HMD =
+            "org.khronos.openxr.intent.category.IMMERSIVE_HMD"
 
         private var ignoreLaunchRequests = false
 
@@ -1111,7 +1115,7 @@ open class EmulationActivity : AppCompatActivity(), ThemeProvider {
             riivolution: Boolean
         ) {
             ignoreLaunchRequests = true
-            val launcher = Intent(activity, emulationActivityClass(activity))
+            val launcher = emulationIntent(activity)
             launcher.putExtra(EXTRA_SELECTED_GAMES, filePaths)
             launcher.putExtra(EXTRA_RIIVOLUTION, riivolution)
             activity.startActivity(launcher)
@@ -1165,7 +1169,7 @@ open class EmulationActivity : AppCompatActivity(), ThemeProvider {
 
         private fun launchSystemMenuWithoutChecks(activity: FragmentActivity) {
             ignoreLaunchRequests = true
-            val launcher = Intent(activity, emulationActivityClass(activity))
+            val launcher = emulationIntent(activity)
             launcher.putExtra(EXTRA_SYSTEM_MENU, true)
             activity.startActivity(launcher)
         }
@@ -1175,12 +1179,17 @@ open class EmulationActivity : AppCompatActivity(), ThemeProvider {
             ignoreLaunchRequests = false
         }
 
-        private fun emulationActivityClass(activity: FragmentActivity) =
-            if (QuestEmulationActivity.isSupported(activity)) {
-                QuestEmulationActivity::class.java
-            } else {
-                EmulationActivity::class.java
+        private fun emulationIntent(activity: FragmentActivity): Intent {
+            if (!QuestEmulationActivity.isSupported(activity)) {
+                return Intent(activity, EmulationActivity::class.java)
             }
+
+            return Intent(activity, QuestEmulationActivity::class.java).apply {
+                action = ACTION_QUEST_OPENXR_GAME
+                addCategory(Intent.CATEGORY_DEFAULT)
+                addCategory(CATEGORY_IMMERSIVE_HMD)
+            }
+        }
 
         private fun areCoordinatesOutside(view: View?, x: Float, y: Float): Boolean {
             if (view == null)

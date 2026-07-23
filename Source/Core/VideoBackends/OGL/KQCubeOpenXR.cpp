@@ -217,8 +217,7 @@ void ClearAndroidActivity(JNIEnv* env, jobject activity)
   env->DeleteGlobalRef(s_android_activity);
   s_android_activity = nullptr;
   s_requested.store(false, std::memory_order_release);
-  if (s_presentation_active.load(std::memory_order_acquire))
-    RequestExit();
+  RequestExit();
   KQXR_LOGI("Quest activity is leaving; render-thread OpenXR teardown requested");
 }
 
@@ -247,7 +246,8 @@ struct KQCubeOpenXR::Impl
 {
   ~Impl() { Shutdown(); }
 
-  bool Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect)
+  bool Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
+               float source_aspect)
   {
     if (failed)
       return false;
@@ -267,7 +267,7 @@ struct KQCubeOpenXR::Impl
     }
 
     SyncControllerInput();
-    return RenderFrame(source, source_rect);
+    return RenderFrame(source, source_rect, source_aspect);
   }
 
   bool Initialize()
@@ -867,7 +867,8 @@ struct KQCubeOpenXR::Impl
     return true;
   }
 
-  bool RenderFrame(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect)
+  bool RenderFrame(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
+                   float source_aspect)
   {
     XrFrameWaitInfo wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState frame_state{XR_TYPE_FRAME_STATE};
@@ -947,10 +948,9 @@ struct KQCubeOpenXR::Impl
 
       if (rendered)
       {
-        const int source_width = std::max(source_rect.GetWidth(), 1);
-        const int source_height = std::max(source_rect.GetHeight(), 1);
-        const float aspect = std::clamp(
-            static_cast<float>(source_width) / static_cast<float>(source_height), 0.75f, 2.5f);
+        const float aspect = std::isfinite(source_aspect) && source_aspect > 0.0f ?
+                                 std::clamp(source_aspect, 0.75f, 2.5f) :
+                                 4.0f / 3.0f;
         for (uint32_t eye = 0; eye < quads.size(); ++eye)
         {
           XrCompositionLayerQuad& quad = quads[eye];
@@ -1025,8 +1025,10 @@ struct KQCubeOpenXR::Impl
     glViewport(0, 0, swapchain.width, swapchain.height);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    // Dolphin's presentation rectangle is top-origin. Invert the OpenGL destination Y coordinates
+    // so the runtime's bottom-origin swapchain image is upright in the headset.
     glBlitFramebuffer(source_rect.left, source_rect.top, source_rect.right, source_rect.bottom, 0,
-                      0, swapchain.width, swapchain.height, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                      swapchain.height, swapchain.width, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR);
     glFlush();
 
     const GLenum error = glGetError();
@@ -1172,8 +1174,6 @@ struct KQCubeOpenXR::Impl
     read_framebuffer = 0;
     draw_framebuffer = 0;
 
-    DestroyControllerActions();
-
     if (session_running && session != XR_NULL_HANDLE)
     {
       if (session_state == XR_SESSION_STATE_STOPPING)
@@ -1192,6 +1192,7 @@ struct KQCubeOpenXR::Impl
       xrDestroySpace(local_space);
     if (session != XR_NULL_HANDLE)
       xrDestroySession(session);
+    DestroyControllerActions();
     if (instance != XR_NULL_HANDLE)
       xrDestroyInstance(instance);
     local_space = XR_NULL_HANDLE;
@@ -1274,9 +1275,10 @@ KQCubeOpenXR::KQCubeOpenXR() : m_impl(std::make_unique<Impl>())
 
 KQCubeOpenXR::~KQCubeOpenXR() = default;
 
-bool KQCubeOpenXR::Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect)
+bool KQCubeOpenXR::Present(const OGLTexture& source, const MathUtil::Rectangle<int>& source_rect,
+                           float source_aspect)
 {
-  return m_impl->Present(source, source_rect);
+  return m_impl->Present(source, source_rect, source_aspect);
 }
 
 bool KQCubeOpenXR::OwnsPresentation() const
@@ -1299,7 +1301,7 @@ KQCubeOpenXR::KQCubeOpenXR() : m_impl(std::make_unique<Impl>())
 
 KQCubeOpenXR::~KQCubeOpenXR() = default;
 
-bool KQCubeOpenXR::Present(const OGLTexture&, const MathUtil::Rectangle<int>&)
+bool KQCubeOpenXR::Present(const OGLTexture&, const MathUtil::Rectangle<int>&, float)
 {
   return false;
 }
