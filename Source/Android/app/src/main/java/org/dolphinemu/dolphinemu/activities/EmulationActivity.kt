@@ -1024,6 +1024,7 @@ open class EmulationActivity : AppCompatActivity(), ThemeProvider {
         private const val CATEGORY_IMMERSIVE_HMD =
             "org.khronos.openxr.intent.category.IMMERSIVE_HMD"
 
+        @Volatile
         private var ignoreLaunchRequests = false
 
         var hasUserPausedEmulation = false

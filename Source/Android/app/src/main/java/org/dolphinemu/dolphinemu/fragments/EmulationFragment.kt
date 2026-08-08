@@ -212,24 +212,27 @@ class EmulationFragment : Fragment(), SurfaceHolder.Callback {
         if (NativeLibrary.IsUninitialized()) {
             NativeLibrary.SetIsBooting()
             val emulationThread = Thread({
-                if (loadPreviousTemporaryState) {
-                    Log.debug("[EmulationFragment] Starting emulation thread from previous state.")
-                    val paths = requireNotNull(gamePaths) {
-                        "Cannot start emulation without any game paths"
+                try {
+                    if (loadPreviousTemporaryState) {
+                        Log.debug("[EmulationFragment] Starting emulation thread from previous state.")
+                        val paths = requireNotNull(gamePaths) {
+                            "Cannot start emulation without any game paths"
+                        }
+                        NativeLibrary.Run(paths, riivolution, temporaryStateFilePath, true)
                     }
-                    NativeLibrary.Run(paths, riivolution, temporaryStateFilePath, true)
-                }
-                if (launchSystemMenu) {
-                    Log.debug("[EmulationFragment] Starting emulation thread for the Wii Menu.")
-                    NativeLibrary.RunSystemMenu()
-                } else {
-                    Log.debug("[EmulationFragment] Starting emulation thread.")
-                    val paths = requireNotNull(gamePaths) {
-                        "Cannot start emulation without any game paths"
+                    if (launchSystemMenu) {
+                        Log.debug("[EmulationFragment] Starting emulation thread for the Wii Menu.")
+                        NativeLibrary.RunSystemMenu()
+                    } else {
+                        Log.debug("[EmulationFragment] Starting emulation thread.")
+                        val paths = requireNotNull(gamePaths) {
+                            "Cannot start emulation without any game paths"
+                        }
+                        NativeLibrary.Run(paths, riivolution)
                     }
-                    NativeLibrary.Run(paths, riivolution)
+                } finally {
+                    EmulationActivity.stopIgnoringLaunchRequests()
                 }
-                EmulationActivity.stopIgnoringLaunchRequests()
             }, "NativeEmulation")
             emulationThread.start()
         } else {

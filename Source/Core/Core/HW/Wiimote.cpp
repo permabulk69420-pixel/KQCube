@@ -22,6 +22,7 @@
 #include "Core/Config/WiimoteSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
+#include "Core/HW/WiimoteEmu/Extension/Nunchuk.h"
 #include "Core/HW/WiimoteEmu/WiimoteEmu.h"
 #include "Core/HW/WiimoteReal/WiimoteReal.h"
 #include "Core/IOS/IOS.h"
@@ -72,6 +73,12 @@ struct OpenXRVelocityHistory
 struct OpenXRWiimoteState
 {
   u64 generation = std::numeric_limits<u64>::max();
+  bool primary_button = false;
+  bool trigger_button = false;
+  bool squeeze_button = false;
+  bool home_button = false;
+  float thumbstick_x = 0.0f;
+  float thumbstick_y = 0.0f;
   Common::Vec3 acceleration{0.0f, 0.0f, float(MathUtil::GRAVITY_ACCELERATION)};
   Common::Vec3 angular_velocity{};
   float ir_x = std::numeric_limits<float>::quiet_NaN();
@@ -98,6 +105,11 @@ OpenXRWiimoteState BuildOpenXRState(const Common::VR::OpenXRControllerState& con
                                     OpenXRVelocityHistory* velocity_history, s64 sample_time_ns)
 {
   OpenXRWiimoteState out;
+  out.primary_button = controller.primary_button;
+  out.trigger_button = controller.trigger_button;
+  out.squeeze_button = controller.squeeze_button;
+  out.thumbstick_x = controller.thumbstick_x;
+  out.thumbstick_y = controller.thumbstick_y;
 
   const bool has_grip_pose = controller.grip_pose.valid;
   const bool has_aim_pose = controller.aim_pose.valid;
@@ -236,16 +248,23 @@ ControllerEmu::InputOverrideFunction CreateOpenXRInputOverrideFunction(unsigned 
     {
       const auto& left = snapshot.controllers[0];
       const auto& right = snapshot.controllers[1];
-      const bool right_valid = right.grip_pose.valid || right.aim_pose.valid;
-      const bool left_valid = left.grip_pose.valid || left.aim_pose.valid;
+      const bool right_valid = right.connected || right.grip_pose.valid || right.aim_pose.valid;
+      const bool left_valid = left.connected || left.grip_pose.valid || left.aim_pose.valid;
       const s64 sample_time_ns = OpenXRSampleTimeNs(snapshot);
 
-      if (!prefer_left_hand && right_valid)
+      if (prefer_left_hand && left_valid)
+        cached_state = BuildOpenXRState(left, &left_velocity_history, sample_time_ns);
+      else if (!prefer_left_hand && right_valid)
         cached_state = BuildOpenXRState(right, &right_velocity_history, sample_time_ns);
       else if (left_valid)
         cached_state = BuildOpenXRState(left, &left_velocity_history, sample_time_ns);
+      else if (right_valid)
+        cached_state = BuildOpenXRState(right, &right_velocity_history, sample_time_ns);
       else
         cached_state = {};
+      // Quest exposes the menu button on the left controller. Keep Home reachable even while the
+      // right controller is acting as the Wii Remote.
+      cached_state.home_button = left.menu_button || right.menu_button;
 
       const bool on_screen = !std::isnan(cached_state.ir_x) &&
                              std::abs(cached_state.ir_x) <= OPENXR_IR_HIDE_MARGIN_U &&
@@ -276,7 +295,36 @@ ControllerEmu::InputOverrideFunction CreateOpenXRInputOverrideFunction(unsigned 
       cached_state.generation = snapshot.generation;
     }
 
-    if (group_name == WiimoteEmu::Wiimote::ACCELEROMETER_GROUP)
+    if (group_name == WiimoteEmu::Wiimote::BUTTONS_GROUP)
+    {
+      constexpr float stick_button_threshold = 0.5f;
+      if (control_name == WiimoteEmu::Wiimote::A_BUTTON)
+        return cached_state.primary_button;
+      if (control_name == WiimoteEmu::Wiimote::B_BUTTON)
+        return cached_state.trigger_button;
+      if (control_name == WiimoteEmu::Wiimote::ONE_BUTTON)
+        return cached_state.thumbstick_y > stick_button_threshold;
+      if (control_name == WiimoteEmu::Wiimote::TWO_BUTTON)
+        return cached_state.thumbstick_y < -stick_button_threshold;
+      if (control_name == WiimoteEmu::Wiimote::MINUS_BUTTON)
+        return cached_state.thumbstick_x < -stick_button_threshold;
+      if (control_name == WiimoteEmu::Wiimote::PLUS_BUTTON)
+        return cached_state.thumbstick_x > stick_button_threshold;
+      if (control_name == WiimoteEmu::Wiimote::HOME_BUTTON)
+        return cached_state.home_button;
+      if (control_name == WiimoteEmu::Nunchuk::C_BUTTON)
+        return cached_state.squeeze_button;
+      if (control_name == WiimoteEmu::Nunchuk::Z_BUTTON)
+        return cached_state.trigger_button;
+    }
+    else if (group_name == WiimoteEmu::Nunchuk::STICK_GROUP)
+    {
+      if (control_name == ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE)
+        return cached_state.thumbstick_x;
+      if (control_name == ControllerEmu::ReshapableInput::Y_INPUT_OVERRIDE)
+        return cached_state.thumbstick_y;
+    }
+    else if (group_name == WiimoteEmu::Wiimote::ACCELEROMETER_GROUP)
     {
       if (control_name == ControllerEmu::ReshapableInput::X_INPUT_OVERRIDE)
         return cached_state.acceleration.x;
@@ -313,6 +361,8 @@ ControllerEmu::InputOverrideFunction CreateOpenXRInputOverrideFunction(unsigned 
 }
 
 std::array<bool, MAX_BBMOTES> s_openxr_overrides_enabled{};
+std::array<u32, MAX_BBMOTES> s_pre_openxr_attachments{};
+std::array<bool, MAX_BBMOTES> s_pre_openxr_motion_plus{};
 
 void UpdateOpenXRInputOverride(unsigned int index, WiimoteSource source)
 {
@@ -320,10 +370,11 @@ void UpdateOpenXRInputOverride(unsigned int index, WiimoteSource source)
   if (!wiimote)
     return;
 
+  auto* attachments = static_cast<ControllerEmu::Attachments*>(
+      wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Attachments));
+
   const auto apply_to_attachments =
-      [wiimote](const ControllerEmu::InputOverrideFunction& override_function) {
-        auto* attachments = static_cast<ControllerEmu::Attachments*>(
-            wiimote->GetWiimoteGroup(WiimoteEmu::WiimoteGroup::Attachments));
+      [attachments](const ControllerEmu::InputOverrideFunction& override_function) {
         if (!attachments)
           return;
 
@@ -340,6 +391,19 @@ void UpdateOpenXRInputOverride(unsigned int index, WiimoteSource source)
 
   if (source == WiimoteSource::OpenXR)
   {
+    if (!s_openxr_overrides_enabled[index])
+    {
+      if (attachments)
+        s_pre_openxr_attachments[index] = attachments->GetSelectedAttachment();
+      s_pre_openxr_motion_plus[index] = wiimote->GetMotionPlusSetting().GetValue();
+    }
+
+    // Selecting the OpenXR source is intentionally self-contained: Skyward Sword needs both a
+    // Nunchuk and MotionPlus, and requiring a separate profile import left them silently disabled.
+    if (attachments)
+      attachments->SetSelectedAttachment(WiimoteEmu::ExtensionNumber::NUNCHUK);
+    wiimote->GetMotionPlusSetting().SetValue(true);
+
     const bool prefer_left_hand = Config::Get(
         Config::Info<bool>{{Config::System::Main, "Android", "QuestLeftHanded"}, false});
     wiimote->SetInputOverrideFunction(CreateOpenXRInputOverrideFunction(index, prefer_left_hand));
@@ -350,6 +414,10 @@ void UpdateOpenXRInputOverride(unsigned int index, WiimoteSource source)
   {
     wiimote->ClearInputOverrideFunction();
     apply_to_attachments({});
+    if (attachments)
+      attachments->SetSelectedAttachment(s_pre_openxr_attachments[index]);
+    wiimote->GetMotionPlusSetting().SetValue(s_pre_openxr_motion_plus[index]);
+    Common::VR::OpenXRInputState::SetRumble(0.0f);
     s_openxr_overrides_enabled[index] = false;
   }
 }
@@ -495,6 +563,15 @@ void Shutdown()
   s_config.UnregisterHotplugCallback();
 
   s_config.ClearControllers();
+
+#ifdef ANDROID
+  // Controller objects are recreated for later game boots in the same Android process. Do not
+  // carry override ownership or saved attachment settings across those object lifetimes.
+  s_openxr_overrides_enabled.fill(false);
+  s_pre_openxr_attachments.fill(0);
+  s_pre_openxr_motion_plus.fill(false);
+  Common::VR::OpenXRInputState::SetRumble(0.0f);
+#endif
 
   WiimoteReal::Stop();
 

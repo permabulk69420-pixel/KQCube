@@ -12,7 +12,7 @@ on:
       - kqcube/2606
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: kqcube-android-${{ github.ref }}
@@ -81,3 +81,23 @@ jobs:
             ${{ steps.apk.outputs.checksum_path }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish Quest controls prerelease
+        if: github.event_name == 'push' && github.ref == 'refs/heads/agent/kqcube-wii-openxr-controls'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          RELEASE_TAG="kqcube-wii-openxr-$SHORT_SHA"
+          RELEASE_APK="KQCube-Quest-Wii-OpenXR-$SHORT_SHA.apk"
+          cp "${{ steps.apk.outputs.apk_path }}" "$RELEASE_APK"
+          sha256sum "$RELEASE_APK" > "$RELEASE_APK.sha256"
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "KQCube Quest controls fix ($SHORT_SHA)" \
+            --notes "Quest test APK built by GitHub Actions from $GITHUB_SHA. Fixes Touch bindings on current Meta interaction profiles, makes the OpenXR Wii source directly drive Wii Remote/Nunchuk/MotionPlus controls, and clears the stuck game-launch guard after interrupted OpenXR sessions. This remains a prerelease pending physical Quest and Skyward Sword validation." \
+            --prerelease \
+            "$RELEASE_APK" \
+            "$RELEASE_APK.sha256"

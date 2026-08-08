@@ -18,8 +18,14 @@
 #include "Common/FileUtil.h"
 #include "Common/Logging/Log.h"
 #include "Common/MathUtil.h"
+#ifdef ANDROID
+#include "Common/VR/OpenXRInputState.h"
+#endif
 
 #include "Core/Config/MainSettings.h"
+#ifdef ANDROID
+#include "Core/Config/WiimoteSettings.h"
+#endif
 #include "Core/Core.h"
 #include "Core/HW/Wiimote.h"
 
@@ -825,6 +831,15 @@ void Wiimote::SetRumble(bool on)
 {
   const auto lock = GetStateLock();
   m_rumble->controls.front()->control_ref->State(on);
+#ifdef ANDROID
+  if (m_index < MAX_WIIMOTES &&
+      Config::Get(Config::GetInfoForWiimoteSource(m_index)) == WiimoteSource::OpenXR)
+  {
+    const bool left_hand = Config::Get(
+        Config::Info<bool>{{Config::System::Main, "Android", "QuestLeftHanded"}, false});
+    Common::VR::OpenXRInputState::SetRumbleForHand(left_hand ? 0 : 1, on ? 1.0f : 0.0f);
+  }
+#endif
 }
 
 void Wiimote::RefreshConfig()

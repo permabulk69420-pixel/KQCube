@@ -14,13 +14,16 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "Common/ScopeGuard.h"
@@ -207,19 +210,14 @@ struct ControllerActions
 {
   XrActionSet action_set = XR_NULL_HANDLE;
   std::array<XrPath, 2> hand_paths{XR_NULL_PATH, XR_NULL_PATH};
-  XrAction left_stick = XR_NULL_HANDLE;
-  XrAction right_stick = XR_NULL_HANDLE;
-  XrAction button_a = XR_NULL_HANDLE;
-  XrAction button_b = XR_NULL_HANDLE;
-  XrAction button_x = XR_NULL_HANDLE;
-  XrAction button_y = XR_NULL_HANDLE;
-  XrAction left_trigger = XR_NULL_HANDLE;
-  XrAction right_trigger = XR_NULL_HANDLE;
-  XrAction left_squeeze = XR_NULL_HANDLE;
-  XrAction right_squeeze = XR_NULL_HANDLE;
-  XrAction menu = XR_NULL_HANDLE;
-  XrAction left_thumbstick_click = XR_NULL_HANDLE;
-  XrAction right_thumbstick_click = XR_NULL_HANDLE;
+  XrAction primary_click = XR_NULL_HANDLE;
+  XrAction secondary_click = XR_NULL_HANDLE;
+  XrAction menu_click = XR_NULL_HANDLE;
+  XrAction thumbstick_click = XR_NULL_HANDLE;
+  XrAction trigger_value = XR_NULL_HANDLE;
+  XrAction squeeze_value = XR_NULL_HANDLE;
+  XrAction thumbstick_x = XR_NULL_HANDLE;
+  XrAction thumbstick_y = XR_NULL_HANDLE;
   XrAction aim_pose = XR_NULL_HANDLE;
   XrAction grip_pose = XR_NULL_HANDLE;
   XrAction haptic = XR_NULL_HANDLE;
@@ -458,10 +456,35 @@ struct KQCubeOpenXR::Impl
       return false;
     }
 
-    constexpr std::array<const char*, 2> extensions{
+    std::vector<const char*> extensions{
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
         XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
     };
+
+    uint32_t extension_count = 0;
+    if (XR_SUCCEEDED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extension_count, nullptr)))
+    {
+      std::vector<XrExtensionProperties> available_extensions(extension_count,
+                                                              {XR_TYPE_EXTENSION_PROPERTIES});
+      if (XR_SUCCEEDED(xrEnumerateInstanceExtensionProperties(
+              nullptr, extension_count, &extension_count, available_extensions.data())))
+      {
+#ifdef XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME
+        const auto meta_touch_plus = std::find_if(
+            available_extensions.begin(), available_extensions.end(), [](const auto& extension) {
+              return std::strcmp(extension.extensionName,
+                                 XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME) == 0;
+            });
+        if (meta_touch_plus != available_extensions.end())
+        {
+          extensions.push_back(XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME);
+          meta_touch_plus_enabled = true;
+          KQXR_LOGI("Enabling %s for Quest Touch Plus bindings",
+                    XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME);
+        }
+#endif
+      }
+    }
     XrInstanceCreateInfoAndroidKHR android_info{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
     android_info.applicationVM = java_vm;
     android_info.applicationActivity = activity;
@@ -473,11 +496,25 @@ struct KQCubeOpenXR::Impl
     instance_info.applicationInfo.applicationVersion = 1;
     std::strncpy(instance_info.applicationInfo.engineName, "Dolphin", XR_MAX_ENGINE_NAME_SIZE - 1);
     instance_info.applicationInfo.engineVersion = 2606;
-    instance_info.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
+    instance_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
     instance_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     instance_info.enabledExtensionNames = extensions.data();
-    if (!XrOk(xrCreateInstance(&instance_info, &instance), "xrCreateInstance"))
+    XrResult create_result = xrCreateInstance(&instance_info, &instance);
+    if (create_result == XR_ERROR_API_VERSION_UNSUPPORTED &&
+        instance_info.applicationInfo.apiVersion != XR_API_VERSION_1_0)
+    {
+      KQXR_LOGW("Runtime rejected OpenXR %u.%u; retrying with 1.0",
+                XR_VERSION_MAJOR(instance_info.applicationInfo.apiVersion),
+                XR_VERSION_MINOR(instance_info.applicationInfo.apiVersion));
+      instance_info.applicationInfo.apiVersion = XR_API_VERSION_1_0;
+      create_result = xrCreateInstance(&instance_info, &instance);
+    }
+    if (!XrOk(create_result, "xrCreateInstance"))
       return false;
+    // Touch Plus is core in OpenXR 1.1. Some runtimes expose the promoted profile without also
+    // advertising the original extension name.
+    if (instance_info.applicationInfo.apiVersion >= XR_MAKE_VERSION(1, 1, 0))
+      meta_touch_plus_enabled = true;
 
     XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};
     if (XrOk(xrGetInstanceProperties(instance, &properties), "xrGetInstanceProperties"))
@@ -554,18 +591,15 @@ struct KQCubeOpenXR::Impl
   }
 
   bool CreateAction(XrActionType type, const char* name, const char* localized_name,
-                    XrAction* action, bool use_hand_subactions = false)
+                    XrAction* action)
   {
     XrActionCreateInfo create_info{XR_TYPE_ACTION_CREATE_INFO};
     create_info.actionType = type;
     std::strncpy(create_info.actionName, name, XR_MAX_ACTION_NAME_SIZE - 1);
     std::strncpy(create_info.localizedActionName, localized_name,
                  XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
-    if (use_hand_subactions)
-    {
-      create_info.countSubactionPaths = static_cast<uint32_t>(controller_actions.hand_paths.size());
-      create_info.subactionPaths = controller_actions.hand_paths.data();
-    }
+    create_info.countSubactionPaths = static_cast<uint32_t>(controller_actions.hand_paths.size());
+    create_info.subactionPaths = controller_actions.hand_paths.data();
     return XrOk(xrCreateAction(controller_actions.action_set, &create_info, action), name);
   }
 
@@ -589,39 +623,28 @@ struct KQCubeOpenXR::Impl
       return false;
     }
 
-    const bool created =
-        CreateAction(XR_ACTION_TYPE_VECTOR2F_INPUT, "left_stick", "GameCube Control Stick",
-                     &controller_actions.left_stick) &&
-        CreateAction(XR_ACTION_TYPE_VECTOR2F_INPUT, "right_stick", "GameCube C Stick",
-                     &controller_actions.right_stick) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_a", "GameCube A",
-                     &controller_actions.button_a) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_b", "GameCube B",
-                     &controller_actions.button_b) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_x", "GameCube X",
-                     &controller_actions.button_x) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "button_y", "GameCube Y",
-                     &controller_actions.button_y) &&
-        CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_trigger", "GameCube L",
-                     &controller_actions.left_trigger) &&
-        CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "right_trigger", "GameCube R",
-                     &controller_actions.right_trigger) &&
-        CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "left_squeeze", "GameCube Start",
-                     &controller_actions.left_squeeze) &&
-        CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "right_squeeze", "GameCube Z",
-                     &controller_actions.right_squeeze) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "menu", "GameCube Start",
-                     &controller_actions.menu) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "left_thumbstick_click", "Left Thumbstick Click",
-                     &controller_actions.left_thumbstick_click) &&
-        CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "right_thumbstick_click",
-                     "Right Thumbstick Click", &controller_actions.right_thumbstick_click) &&
-        CreateAction(XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Aim Pose",
-                     &controller_actions.aim_pose, true) &&
-        CreateAction(XR_ACTION_TYPE_POSE_INPUT, "grip_pose", "Grip Pose",
-                     &controller_actions.grip_pose, true) &&
-        CreateAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic", "Haptic Output",
-                     &controller_actions.haptic, true);
+    const bool created = CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "primary_click",
+                                      "Primary Button", &controller_actions.primary_click) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "secondary_click",
+                                      "Secondary Button", &controller_actions.secondary_click) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "menu_click", "Menu Button",
+                                      &controller_actions.menu_click) &&
+                         CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT, "thumbstick_click",
+                                      "Thumbstick Click", &controller_actions.thumbstick_click) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "trigger_value", "Trigger Value",
+                                      &controller_actions.trigger_value) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "squeeze_value", "Squeeze Value",
+                                      &controller_actions.squeeze_value) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "thumbstick_x", "Thumbstick X",
+                                      &controller_actions.thumbstick_x) &&
+                         CreateAction(XR_ACTION_TYPE_FLOAT_INPUT, "thumbstick_y", "Thumbstick Y",
+                                      &controller_actions.thumbstick_y) &&
+                         CreateAction(XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Aim Pose",
+                                      &controller_actions.aim_pose) &&
+                         CreateAction(XR_ACTION_TYPE_POSE_INPUT, "grip_pose", "Grip Pose",
+                                      &controller_actions.grip_pose) &&
+                         CreateAction(XR_ACTION_TYPE_VIBRATION_OUTPUT, "haptic", "Haptic Output",
+                                      &controller_actions.haptic);
     if (!created)
     {
       DestroyControllerActions();
@@ -633,57 +656,89 @@ struct KQCubeOpenXR::Impl
       XrAction action;
       const char* path;
     };
-    const std::array<BindingPath, 19> binding_paths{{
-        {controller_actions.left_stick, "/user/hand/left/input/thumbstick"},
-        {controller_actions.right_stick, "/user/hand/right/input/thumbstick"},
-        {controller_actions.button_a, "/user/hand/right/input/a/click"},
-        {controller_actions.button_b, "/user/hand/right/input/b/click"},
-        {controller_actions.button_x, "/user/hand/left/input/x/click"},
-        {controller_actions.button_y, "/user/hand/left/input/y/click"},
-        {controller_actions.left_trigger, "/user/hand/left/input/trigger/value"},
-        {controller_actions.right_trigger, "/user/hand/right/input/trigger/value"},
-        {controller_actions.left_squeeze, "/user/hand/left/input/squeeze/value"},
-        {controller_actions.right_squeeze, "/user/hand/right/input/squeeze/value"},
-        {controller_actions.menu, "/user/hand/left/input/menu/click"},
-        {controller_actions.left_thumbstick_click, "/user/hand/left/input/thumbstick/click"},
-        {controller_actions.right_thumbstick_click, "/user/hand/right/input/thumbstick/click"},
-        {controller_actions.aim_pose, "/user/hand/left/input/aim/pose"},
-        {controller_actions.aim_pose, "/user/hand/right/input/aim/pose"},
-        {controller_actions.grip_pose, "/user/hand/left/input/grip/pose"},
-        {controller_actions.grip_pose, "/user/hand/right/input/grip/pose"},
-        {controller_actions.haptic, "/user/hand/left/output/haptic"},
-        {controller_actions.haptic, "/user/hand/right/output/haptic"},
-    }};
-    std::array<XrActionSuggestedBinding, 19> bindings{};
-    for (size_t i = 0; i < binding_paths.size(); ++i)
-    {
-      bindings[i].action = binding_paths[i].action;
-      if (!XrOk(xrStringToPath(instance, binding_paths[i].path, &bindings[i].binding),
-                binding_paths[i].path))
-      {
-        DestroyControllerActions();
-        return false;
-      }
-    }
 
-    XrPath touch_profile = XR_NULL_PATH;
-    if (!XrOk(xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller",
-                             &touch_profile),
-              "Oculus Touch interaction profile"))
+    const auto suggest_bindings = [this](const char* profile,
+                                         std::initializer_list<BindingPath> definitions) {
+      XrPath profile_path = XR_NULL_PATH;
+      if (XR_FAILED(xrStringToPath(instance, profile, &profile_path)))
+        return;
+
+      std::vector<XrActionSuggestedBinding> bindings;
+      bindings.reserve(definitions.size());
+      for (const BindingPath& definition : definitions)
+      {
+        XrPath binding_path = XR_NULL_PATH;
+        if (definition.action != XR_NULL_HANDLE &&
+            XR_SUCCEEDED(xrStringToPath(instance, definition.path, &binding_path)))
+        {
+          bindings.push_back({definition.action, binding_path});
+        }
+      }
+      if (bindings.empty())
+        return;
+
+      XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+      suggested.interactionProfile = profile_path;
+      suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+      suggested.suggestedBindings = bindings.data();
+      const XrResult result = xrSuggestInteractionProfileBindings(instance, &suggested);
+      if (XR_FAILED(result))
+      {
+        KQXR_LOGW("Bindings for %s were rejected (%s); trying other Quest profiles", profile,
+                  XrResultName(result));
+      }
+      else
+      {
+        KQXR_LOGI("Suggested %zu bindings for %s", bindings.size(), profile);
+      }
+    };
+
+    suggest_bindings("/interaction_profiles/khr/simple_controller",
+                     {{controller_actions.primary_click, "/user/hand/left/input/select/click"},
+                      {controller_actions.primary_click, "/user/hand/right/input/select/click"},
+                      {controller_actions.menu_click, "/user/hand/left/input/menu/click"},
+                      {controller_actions.menu_click, "/user/hand/right/input/menu/click"},
+                      {controller_actions.aim_pose, "/user/hand/left/input/aim/pose"},
+                      {controller_actions.aim_pose, "/user/hand/right/input/aim/pose"},
+                      {controller_actions.grip_pose, "/user/hand/left/input/grip/pose"},
+                      {controller_actions.grip_pose, "/user/hand/right/input/grip/pose"},
+                      {controller_actions.haptic, "/user/hand/left/output/haptic"},
+                      {controller_actions.haptic, "/user/hand/right/output/haptic"}});
+
+    const auto suggest_touch_bindings = [&suggest_bindings, this](const char* profile) {
+      suggest_bindings(
+          profile,
+          {{controller_actions.primary_click, "/user/hand/left/input/x/click"},
+           {controller_actions.secondary_click, "/user/hand/left/input/y/click"},
+           {controller_actions.menu_click, "/user/hand/left/input/menu/click"},
+           {controller_actions.thumbstick_click, "/user/hand/left/input/thumbstick/click"},
+           {controller_actions.thumbstick_x, "/user/hand/left/input/thumbstick/x"},
+           {controller_actions.thumbstick_y, "/user/hand/left/input/thumbstick/y"},
+           {controller_actions.trigger_value, "/user/hand/left/input/trigger/value"},
+           {controller_actions.squeeze_value, "/user/hand/left/input/squeeze/value"},
+           {controller_actions.aim_pose, "/user/hand/left/input/aim/pose"},
+           {controller_actions.grip_pose, "/user/hand/left/input/grip/pose"},
+           {controller_actions.primary_click, "/user/hand/right/input/a/click"},
+           {controller_actions.secondary_click, "/user/hand/right/input/b/click"},
+           {controller_actions.menu_click, "/user/hand/right/input/system/click"},
+           {controller_actions.thumbstick_click, "/user/hand/right/input/thumbstick/click"},
+           {controller_actions.thumbstick_x, "/user/hand/right/input/thumbstick/x"},
+           {controller_actions.thumbstick_y, "/user/hand/right/input/thumbstick/y"},
+           {controller_actions.trigger_value, "/user/hand/right/input/trigger/value"},
+           {controller_actions.squeeze_value, "/user/hand/right/input/squeeze/value"},
+           {controller_actions.aim_pose, "/user/hand/right/input/aim/pose"},
+           {controller_actions.grip_pose, "/user/hand/right/input/grip/pose"},
+           {controller_actions.haptic, "/user/hand/left/output/haptic"},
+           {controller_actions.haptic, "/user/hand/right/output/haptic"}});
+    };
+
+    suggest_touch_bindings("/interaction_profiles/oculus/touch_controller");
+    if (meta_touch_plus_enabled)
     {
-      DestroyControllerActions();
-      return false;
+      suggest_touch_bindings("/interaction_profiles/meta/touch_plus_controller");
+      suggest_touch_bindings("/interaction_profiles/meta/touch_controller_plus");
     }
-    XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
-    suggested.interactionProfile = touch_profile;
-    suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
-    suggested.suggestedBindings = bindings.data();
-    if (!XrOk(xrSuggestInteractionProfileBindings(instance, &suggested),
-              "xrSuggestInteractionProfileBindings(Oculus Touch)"))
-    {
-      DestroyControllerActions();
-      return false;
-    }
+    suggest_touch_bindings("/interaction_profiles/meta/touch_controller_quest_2");
 
     XrSessionActionSetsAttachInfo attach_info{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attach_info.countActionSets = 1;
@@ -700,33 +755,32 @@ struct KQCubeOpenXR::Impl
       space_info.action = action;
       space_info.subactionPath = hand_path;
       space_info.poseInActionSpace.orientation.w = 1.0f;
-      return XrOk(xrCreateActionSpace(session, &space_info, space), operation);
+      const XrResult result = xrCreateActionSpace(session, &space_info, space);
+      if (XR_FAILED(result))
+        KQXR_LOGW("%s failed: %s; buttons remain available", operation, XrResultName(result));
     };
 
     for (size_t hand = 0; hand < controller_actions.hand_paths.size(); ++hand)
     {
-      if (!create_action_space(controller_actions.aim_pose, controller_actions.hand_paths[hand],
-                               &controller_actions.aim_spaces[hand],
-                               hand == 0 ? "xrCreateActionSpace(left aim)" :
-                                           "xrCreateActionSpace(right aim)") ||
-          !create_action_space(controller_actions.grip_pose, controller_actions.hand_paths[hand],
-                               &controller_actions.grip_spaces[hand],
-                               hand == 0 ? "xrCreateActionSpace(left grip)" :
-                                           "xrCreateActionSpace(right grip)"))
-      {
-        DestroyControllerActions();
-        return false;
-      }
+      create_action_space(controller_actions.aim_pose, controller_actions.hand_paths[hand],
+                          &controller_actions.aim_spaces[hand],
+                          hand == 0 ? "xrCreateActionSpace(left aim)" :
+                                      "xrCreateActionSpace(right aim)");
+      create_action_space(controller_actions.grip_pose, controller_actions.hand_paths[hand],
+                          &controller_actions.grip_spaces[hand],
+                          hand == 0 ? "xrCreateActionSpace(left grip)" :
+                                      "xrCreateActionSpace(right grip)");
     }
 
     KQXR_LOGI("Touch actions attached: GameCube override plus shared OpenXR Wii input device");
     return true;
   }
 
-  bool ReadBooleanAction(XrAction action, bool* any_active) const
+  bool ReadBooleanAction(XrAction action, XrPath hand_path, bool* any_active) const
   {
     XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
     get_info.action = action;
+    get_info.subactionPath = hand_path;
     XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
     if (XR_FAILED(xrGetActionStateBoolean(session, &get_info, &state)))
       return false;
@@ -734,26 +788,16 @@ struct KQCubeOpenXR::Impl
     return state.isActive == XR_TRUE && state.currentState == XR_TRUE;
   }
 
-  float ReadFloatAction(XrAction action, bool* any_active) const
+  float ReadFloatAction(XrAction action, XrPath hand_path, bool* any_active) const
   {
     XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
     get_info.action = action;
+    get_info.subactionPath = hand_path;
     XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};
     if (XR_FAILED(xrGetActionStateFloat(session, &get_info, &state)))
       return 0.0f;
     *any_active |= state.isActive == XR_TRUE;
     return state.isActive == XR_TRUE ? state.currentState : 0.0f;
-  }
-
-  XrVector2f ReadVectorAction(XrAction action, bool* any_active) const
-  {
-    XrActionStateGetInfo get_info{XR_TYPE_ACTION_STATE_GET_INFO};
-    get_info.action = action;
-    XrActionStateVector2f state{XR_TYPE_ACTION_STATE_VECTOR2F};
-    if (XR_FAILED(xrGetActionStateVector2f(session, &get_info, &state)))
-      return {};
-    *any_active |= state.isActive == XR_TRUE;
-    return state.isActive == XR_TRUE ? state.currentState : XrVector2f{};
   }
 
   bool ReadPoseAction(XrAction action, XrPath hand_path, bool* any_active) const
@@ -871,6 +915,18 @@ struct KQCubeOpenXR::Impl
     sync_info.countActiveActionSets = 1;
     sync_info.activeActionSets = &active_set;
     const XrResult sync_result = xrSyncActions(session, &sync_info);
+    if (sync_result == XR_SESSION_NOT_FOCUSED)
+    {
+      // Keep the runtime identity across brief system overlays, but publish neutral controls so a
+      // button held while the Quest system UI took focus cannot remain stuck in Dolphin.
+      ClearControllerInputStates();
+      StopHaptics();
+      const auto previous_snapshot = Common::VR::OpenXRInputState::GetSnapshot();
+      Common::VR::OpenXRInputState::SetControllers({}, true, previous_snapshot.interaction_profiles,
+                                                   false, sample_time);
+      input_state_published = true;
+      return;
+    }
     if (XR_FAILED(sync_result))
     {
       ClearControllerInputStates();
@@ -879,81 +935,59 @@ struct KQCubeOpenXR::Impl
     }
 
     const std::array<std::string, 2> profiles = GetInteractionProfiles();
-    const bool focused =
-        session_state == XR_SESSION_STATE_FOCUSED && sync_result != XR_SESSION_NOT_FOCUSED;
-    if (!focused)
-    {
-      ClearControllerInputStates();
-      Common::VR::OpenXRInputState::SetControllers({}, true, profiles, false, sample_time);
-      input_state_published = true;
-      StopHaptics();
-      return;
-    }
-
     constexpr float digital_threshold = 0.45f;
     std::array<Common::VR::OpenXRControllerState, 2> controllers{};
-    auto& left = controllers[0];
-    auto& right = controllers[1];
-    bool left_active = false;
-    bool right_active = false;
-
-    const XrVector2f left_stick = ReadVectorAction(controller_actions.left_stick, &left_active);
-    const XrVector2f right_stick = ReadVectorAction(controller_actions.right_stick, &right_active);
-    left.primary_button = ReadBooleanAction(controller_actions.button_x, &left_active);
-    left.secondary_button = ReadBooleanAction(controller_actions.button_y, &left_active);
-    left.menu_button = ReadBooleanAction(controller_actions.menu, &left_active);
-    left.thumbstick_button =
-        ReadBooleanAction(controller_actions.left_thumbstick_click, &left_active);
-    right.primary_button = ReadBooleanAction(controller_actions.button_a, &right_active);
-    right.secondary_button = ReadBooleanAction(controller_actions.button_b, &right_active);
-    right.thumbstick_button =
-        ReadBooleanAction(controller_actions.right_thumbstick_click, &right_active);
-
-    left.trigger_value =
-        std::clamp(ReadFloatAction(controller_actions.left_trigger, &left_active), 0.0f, 1.0f);
-    right.trigger_value =
-        std::clamp(ReadFloatAction(controller_actions.right_trigger, &right_active), 0.0f, 1.0f);
-    left.squeeze_value =
-        std::clamp(ReadFloatAction(controller_actions.left_squeeze, &left_active), 0.0f, 1.0f);
-    right.squeeze_value =
-        std::clamp(ReadFloatAction(controller_actions.right_squeeze, &right_active), 0.0f, 1.0f);
-    left.thumbstick_x = std::clamp(left_stick.x, -1.0f, 1.0f);
-    left.thumbstick_y = std::clamp(left_stick.y, -1.0f, 1.0f);
-    right.thumbstick_x = std::clamp(right_stick.x, -1.0f, 1.0f);
-    right.thumbstick_y = std::clamp(right_stick.y, -1.0f, 1.0f);
-    left.trigger_button = left.trigger_value > digital_threshold;
-    right.trigger_button = right.trigger_value > digital_threshold;
-    left.squeeze_button = left.squeeze_value > digital_threshold;
-    right.squeeze_button = right.squeeze_value > digital_threshold;
-
     for (size_t hand = 0; hand < controllers.size(); ++hand)
     {
-      bool& active = hand == 0 ? left_active : right_active;
+      const XrPath hand_path = controller_actions.hand_paths[hand];
+      auto& controller = controllers[hand];
+      bool active = false;
+      controller.primary_button =
+          ReadBooleanAction(controller_actions.primary_click, hand_path, &active);
+      controller.secondary_button =
+          ReadBooleanAction(controller_actions.secondary_click, hand_path, &active);
+      controller.menu_button = ReadBooleanAction(controller_actions.menu_click, hand_path, &active);
+      controller.thumbstick_button =
+          ReadBooleanAction(controller_actions.thumbstick_click, hand_path, &active);
+      controller.trigger_value = std::clamp(
+          ReadFloatAction(controller_actions.trigger_value, hand_path, &active), 0.0f, 1.0f);
+      controller.squeeze_value = std::clamp(
+          ReadFloatAction(controller_actions.squeeze_value, hand_path, &active), 0.0f, 1.0f);
+      controller.thumbstick_x = std::clamp(
+          ReadFloatAction(controller_actions.thumbstick_x, hand_path, &active), -1.0f, 1.0f);
+      controller.thumbstick_y = std::clamp(
+          ReadFloatAction(controller_actions.thumbstick_y, hand_path, &active), -1.0f, 1.0f);
+      controller.trigger_button = controller.trigger_value > digital_threshold;
+      controller.squeeze_button = controller.squeeze_value > digital_threshold;
+
       ReadPoseAction(controller_actions.aim_pose, controller_actions.hand_paths[hand], &active);
       ReadPoseAction(controller_actions.grip_pose, controller_actions.hand_paths[hand], &active);
-      LocateControllerSpace(controller_actions.aim_spaces[hand], sample_time,
-                            &controllers[hand].aim_pose, nullptr);
+      LocateControllerSpace(controller_actions.aim_spaces[hand], sample_time, &controller.aim_pose,
+                            nullptr);
       LocateControllerSpace(controller_actions.grip_spaces[hand], sample_time,
-                            &controllers[hand].grip_pose, &controllers[hand].grip_velocity);
-      controllers[hand].screen_hit =
-          ComputeVirtualScreenHit(controllers[hand].aim_pose, source_aspect);
-      controllers[hand].connected =
-          active || controllers[hand].aim_pose.valid || controllers[hand].grip_pose.valid;
+                            &controller.grip_pose, &controller.grip_velocity);
+      controller.screen_hit = ComputeVirtualScreenHit(controller.aim_pose, source_aspect);
+      controller.connected = active || controller.aim_pose.valid || controller.grip_pose.valid;
     }
 
-    Common::VR::OpenXRInputState::SetControllers(controllers, true, profiles, true, sample_time);
+    Common::VR::OpenXRInputState::SetControllers(
+        controllers, true, profiles, session_state == XR_SESSION_STATE_FOCUSED, sample_time);
     input_state_published = true;
     UpdateHaptics();
 
+    const auto& left = controllers[0];
+    const auto& right = controllers[1];
+
     if ((++input_sync_count % 300) == 1)
     {
-      KQXR_LOGI("Touch state focused=1: L connected=%d buttons=%d/%d aim=%d grip=%d linear=%d "
+      KQXR_LOGI("Touch state session=%s: L connected=%d buttons=%d/%d aim=%d grip=%d linear=%d "
                 "angular=%d; R connected=%d buttons=%d/%d aim=%d grip=%d linear=%d angular=%d",
-                left.connected, left.primary_button, left.trigger_button, left.aim_pose.valid,
-                left.grip_pose.valid, left.grip_velocity.linear_valid,
-                left.grip_velocity.angular_valid, right.connected, right.primary_button,
-                right.trigger_button, right.aim_pose.valid, right.grip_pose.valid,
-                right.grip_velocity.linear_valid, right.grip_velocity.angular_valid);
+                SessionStateName(session_state), left.connected, left.primary_button,
+                left.trigger_button, left.aim_pose.valid, left.grip_pose.valid,
+                left.grip_velocity.linear_valid, left.grip_velocity.angular_valid, right.connected,
+                right.primary_button, right.trigger_button, right.aim_pose.valid,
+                right.grip_pose.valid, right.grip_velocity.linear_valid,
+                right.grip_velocity.angular_valid);
     }
 
     if (!input_registered || (!left.connected && !right.connected))
@@ -962,8 +996,10 @@ struct KQCubeOpenXR::Impl
       return;
     }
 
-    const XrVector2f gamecube_left_stick = ApplyStickDeadzone(left_stick);
-    const XrVector2f gamecube_right_stick = ApplyStickDeadzone(right_stick);
+    const XrVector2f gamecube_left_stick =
+        ApplyStickDeadzone({left.thumbstick_x, left.thumbstick_y});
+    const XrVector2f gamecube_right_stick =
+        ApplyStickDeadzone({right.thumbstick_x, right.thumbstick_y});
     using ciface::Touch::ControlID;
     ciface::Touch::SetControlState(0, ControlID::GCPAD_A_BUTTON, right.primary_button);
     ciface::Touch::SetControlState(0, ControlID::GCPAD_B_BUTTON, right.secondary_button);
@@ -1582,9 +1618,33 @@ struct KQCubeOpenXR::Impl
     {
       StopHaptics();
       if (session_state == XR_SESSION_STATE_STOPPING)
+      {
         XrOk(xrEndSession(session), "xrEndSession(shutdown)");
+        session_running = false;
+      }
       else
-        XrOk(xrRequestExitSession(session), "xrRequestExitSession(shutdown)");
+      {
+        const XrResult exit_result = xrRequestExitSession(session);
+        if (XR_FAILED(exit_result))
+        {
+          KQXR_LOGW("xrRequestExitSession(shutdown) failed: %s", XrResultName(exit_result));
+        }
+        else
+        {
+          // Give the runtime a short opportunity to return STOPPING so xrEndSession runs before
+          // the session is destroyed. This also releases Quest controller focus reliably when
+          // returning to Dolphin's game grid.
+          constexpr int shutdown_poll_attempts = 50;
+          for (int attempt = 0; attempt < shutdown_poll_attempts && session_running; ++attempt)
+          {
+            PollEvents();
+            if (session_running)
+              std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          }
+          if (session_running)
+            KQXR_LOGW("OpenXR session did not enter STOPPING before shutdown timeout");
+        }
+      }
       session_running = false;
     }
     for (Swapchain& swapchain : swapchains)
@@ -1682,6 +1742,7 @@ struct KQCubeOpenXR::Impl
   bool input_registered = false;
   bool input_state_published = false;
   bool logged_touch_active = false;
+  bool meta_touch_plus_enabled = false;
 };
 
 KQCubeOpenXR::KQCubeOpenXR() : m_impl(std::make_unique<Impl>())

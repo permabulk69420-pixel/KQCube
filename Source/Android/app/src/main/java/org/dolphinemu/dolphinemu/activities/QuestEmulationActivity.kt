@@ -23,6 +23,9 @@ class QuestEmulationActivity : EmulationActivity() {
 
     override fun onDestroy() {
         NativeLibrary.ShutdownOpenXR(this)
+        // A failed or interrupted native boot must never leave the game grid's process-wide launch
+        // guard latched. The emulation thread also clears this in a finally block on normal exit.
+        EmulationActivity.stopIgnoringLaunchRequests()
         super.onDestroy()
     }
 

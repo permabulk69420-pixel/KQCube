@@ -68,6 +68,7 @@ class TvMainActivity : FragmentActivity(), MainView, OnRefreshListener {
 
     override fun onResume() {
         super.onResume()
+        EmulationActivity.stopIgnoringLaunchRequests()
         if (DirectoryInitialization.shouldStart(this)) {
             DirectoryInitialization.start(this)
             GameFileCacheManager.startLoad()
