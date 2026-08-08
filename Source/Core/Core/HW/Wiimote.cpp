@@ -76,9 +76,15 @@ struct OpenXRWiimoteState
   bool primary_button = false;
   bool trigger_button = false;
   bool squeeze_button = false;
+  bool plus_button = false;
+  bool minus_button = false;
+  bool one_button = false;
+  bool two_button = false;
   bool home_button = false;
   float thumbstick_x = 0.0f;
   float thumbstick_y = 0.0f;
+  float dpad_x = 0.0f;
+  float dpad_y = 0.0f;
   Common::Vec3 acceleration{0.0f, 0.0f, float(MathUtil::GRAVITY_ACCELERATION)};
   Common::Vec3 angular_velocity{};
   float ir_x = std::numeric_limits<float>::quiet_NaN();
@@ -262,6 +268,19 @@ ControllerEmu::InputOverrideFunction CreateOpenXRInputOverrideFunction(unsigned 
         cached_state = BuildOpenXRState(right, &right_velocity_history, sample_time_ns);
       else
         cached_state = {};
+
+      // The preferred controller is the Wii Remote and the other controller is the Nunchuk.
+      // Keep the right-handed default aligned with the physical Touch labels: B is Plus, X is
+      // Minus, Y is 1, and the remote-hand stick click is 2. The remote-hand stick is reserved
+      // for the Wii D-pad so the Nunchuk-hand stick remains a true analog Nunchuk stick.
+      const auto& remote = prefer_left_hand ? left : right;
+      const auto& nunchuk = prefer_left_hand ? right : left;
+      cached_state.plus_button = remote.secondary_button;
+      cached_state.minus_button = nunchuk.primary_button;
+      cached_state.one_button = nunchuk.secondary_button;
+      cached_state.two_button = remote.thumbstick_button;
+      cached_state.dpad_x = remote.thumbstick_x;
+      cached_state.dpad_y = remote.thumbstick_y;
       // Quest exposes the menu button on the left controller. Keep Home reachable even while the
       // right controller is acting as the Wii Remote.
       cached_state.home_button = left.menu_button || right.menu_button;
@@ -297,25 +316,36 @@ ControllerEmu::InputOverrideFunction CreateOpenXRInputOverrideFunction(unsigned 
 
     if (group_name == WiimoteEmu::Wiimote::BUTTONS_GROUP)
     {
-      constexpr float stick_button_threshold = 0.5f;
       if (control_name == WiimoteEmu::Wiimote::A_BUTTON)
         return cached_state.primary_button;
       if (control_name == WiimoteEmu::Wiimote::B_BUTTON)
         return cached_state.trigger_button;
       if (control_name == WiimoteEmu::Wiimote::ONE_BUTTON)
-        return cached_state.thumbstick_y > stick_button_threshold;
+        return cached_state.one_button;
       if (control_name == WiimoteEmu::Wiimote::TWO_BUTTON)
-        return cached_state.thumbstick_y < -stick_button_threshold;
+        return cached_state.two_button;
       if (control_name == WiimoteEmu::Wiimote::MINUS_BUTTON)
-        return cached_state.thumbstick_x < -stick_button_threshold;
+        return cached_state.minus_button;
       if (control_name == WiimoteEmu::Wiimote::PLUS_BUTTON)
-        return cached_state.thumbstick_x > stick_button_threshold;
+        return cached_state.plus_button;
       if (control_name == WiimoteEmu::Wiimote::HOME_BUTTON)
         return cached_state.home_button;
       if (control_name == WiimoteEmu::Nunchuk::C_BUTTON)
         return cached_state.squeeze_button;
       if (control_name == WiimoteEmu::Nunchuk::Z_BUTTON)
         return cached_state.trigger_button;
+    }
+    else if (group_name == WiimoteEmu::Wiimote::DPAD_GROUP)
+    {
+      constexpr float stick_button_threshold = 0.5f;
+      if (control_name == DIRECTION_UP)
+        return cached_state.dpad_y > stick_button_threshold;
+      if (control_name == DIRECTION_DOWN)
+        return cached_state.dpad_y < -stick_button_threshold;
+      if (control_name == DIRECTION_LEFT)
+        return cached_state.dpad_x < -stick_button_threshold;
+      if (control_name == DIRECTION_RIGHT)
+        return cached_state.dpad_x > stick_button_threshold;
     }
     else if (group_name == WiimoteEmu::Nunchuk::STICK_GROUP)
     {

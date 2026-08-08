@@ -153,7 +153,8 @@ Select **OpenXR Wii Remote** for Wii Remote 1 and load the stock **OpenXR Wii Re
 profile uses the right Touch controller as the Wii Remote and the left controller as a Nunchuk:
 
 - A and right trigger map to Wii A/B;
-- the right stick maps to 1/2/-/+;
+- the right stick maps to the Wii D-pad;
+- right B, left X, left Y, and right stick click map to Wii +, -, 1, and 2;
 - left menu maps to Home;
 - left squeeze/trigger and stick map to Nunchuk C/Z and its analog stick;
 - Dolphin rumble maps to short repeated OpenXR haptic pulses.
