@@ -23,6 +23,7 @@
 #endif
 #ifdef CIFACE_USE_ANDROID
 #include "InputCommon/ControllerInterface/Android/Android.h"
+#include "InputCommon/ControllerInterface/OpenXR/OpenXR.h"
 #endif
 #ifdef CIFACE_USE_EVDEV
 #include "InputCommon/ControllerInterface/evdev/evdev.h"
@@ -72,6 +73,7 @@ void ControllerInterface::Initialize(const WindowSystemInfo& wsi)
 #endif
 #ifdef CIFACE_USE_ANDROID
   m_input_backends.emplace_back(ciface::Android::CreateInputBackend(this));
+  m_input_backends.emplace_back(ciface::OpenXR::CreateInputBackend(this));
 #endif
 #ifdef CIFACE_USE_EVDEV
   m_input_backends.emplace_back(ciface::evdev::CreateInputBackend(this));

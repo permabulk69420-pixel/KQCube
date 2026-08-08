@@ -1,0 +1,56 @@
+name: Publish KQCube Wii OpenXR APK
+
+on:
+  push:
+    branches:
+      - agent/kqcube-wii-openxr-controls
+    paths:
+      - .github/workflows/publish-kqcube-wii-openxr-apk.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish-release:
+    name: Publish installable APK release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      BUILD_RUN_ID: "31243180616"
+      BUILD_SHA: "5421ff0b6071c26de829a96d829a9210eff58c33"
+      RELEASE_TAG: kqcube-wii-openxr-5421ff0
+      RELEASE_APK: KQCube-Quest-Wii-OpenXR-5421ff0.apk
+
+    steps:
+      - name: Download the verified APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: KQCube-android-debug-5421ff0b6071c26de829a96d829a9210eff58c33
+          path: release-input
+          github-token: ${{ github.token }}
+          run-id: ${{ env.BUILD_RUN_ID }}
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          APK="$(find release-input -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          cp "$APK" "$RELEASE_APK"
+          sha256sum "$RELEASE_APK" > "$RELEASE_APK.sha256"
+          unzip -l "$RELEASE_APK" | grep -q 'lib/arm64-v8a/'
+
+      - name: Publish GitHub prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$BUILD_SHA" \
+            --title "KQCube Quest Wii OpenXR Controls (5421ff0)" \
+            --notes "Installable Quest debug APK for the Wii Remote, Nunchuk, MotionPlus, IR pointing, and haptics port. Built from commit $BUILD_SHA by GitHub Actions. This is a prerelease pending physical Quest and Skyward Sword validation." \
+            --prerelease \
+            "$RELEASE_APK" \
+            "$RELEASE_APK.sha256"

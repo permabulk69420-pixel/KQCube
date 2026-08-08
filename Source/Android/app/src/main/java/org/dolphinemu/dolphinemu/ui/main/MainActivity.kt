@@ -17,6 +17,7 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout.OnRefreshListener
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.tabs.TabLayout
 import org.dolphinemu.dolphinemu.R
+import org.dolphinemu.dolphinemu.activities.EmulationActivity
 import org.dolphinemu.dolphinemu.adapters.PlatformPagerAdapter
 import org.dolphinemu.dolphinemu.databinding.ActivityMainBinding
 import org.dolphinemu.dolphinemu.features.settings.model.IntSetting
@@ -94,6 +95,9 @@ class MainActivity : AppCompatActivity(), MainView, OnRefreshListener, ThemeProv
         ThemeHelper.setCorrectTheme(this)
 
         super.onResume()
+        // Reaching the game grid means a new launch should be allowed, even if the previous Quest
+        // activity or native thread was interrupted before its normal cleanup path ran.
+        EmulationActivity.stopIgnoringLaunchRequests()
         if (DirectoryInitialization.shouldStart(this)) {
             DirectoryInitialization.start(this)
             AfterDirectoryInitializationRunner()

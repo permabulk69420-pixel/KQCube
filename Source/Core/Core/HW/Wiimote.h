@@ -49,6 +49,7 @@ enum class WiimoteSource
   None = 0,
   Emulated = 1,
   Real = 2,
+  OpenXR = 3,
 };
 
 namespace WiimoteCommon

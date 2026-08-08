@@ -136,6 +136,8 @@ elseif(ANDROID)
   target_sources(inputcommon PRIVATE
     ControllerInterface/Android/Android.cpp
     ControllerInterface/Android/Android.h
+    ControllerInterface/OpenXR/OpenXR.cpp
+    ControllerInterface/OpenXR/OpenXR.h
     ControllerInterface/Touch/InputOverrider.cpp
     ControllerInterface/Touch/InputOverrider.h
   )

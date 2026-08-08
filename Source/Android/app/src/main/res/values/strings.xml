@@ -835,6 +835,7 @@ It can efficiently compress both junk data and encrypted Wii data.
     <!-- Wiimote Types -->
     <string name="wiimote_disabled">None</string>
     <string name="wiimote_emulated">Emulated Wii Remote</string>
+    <string name="wiimote_openxr">OpenXR Wii Remote</string>
     <string name="wiimote_real">Real Wii Remote (DolphinBar required)</string>
 
     <!-- Gamepad Controls -->

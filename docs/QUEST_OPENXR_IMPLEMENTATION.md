@@ -142,6 +142,37 @@ both sticks; trigger analogue values are preserved and their digital clicks use 
 When Touch actions are inactive, their overrides are cleared so an Android or paired controller can
 continue supplying input. The GameCube override is unregistered during render-thread teardown.
 
+## Wii Remote and Nunchuk path
+
+The same action set also exposes aim/grip poses, grip linear and angular velocity, thumbstick
+clicks, and haptic output for both hands. The render thread publishes those values through a small
+thread-safe `OpenXRInputState` snapshot consumed by Dolphin's ordinary ControllerInterface and
+Wiimote emulation code. No second OpenXR instance or session is created.
+
+Select **OpenXR Wii Remote** for Wii Remote 1 and load the stock **OpenXR Wii Remote** profile. The
+profile uses the right Touch controller as the Wii Remote and the left controller as a Nunchuk:
+
+- A and right trigger map to Wii A/B;
+- the right stick maps to the Wii D-pad;
+- right B, left X, left Y, and right stick click map to Wii +, -, 1, and 2;
+- left menu maps to Home;
+- left squeeze/trigger and stick map to Nunchuk C/Z and its analog stick;
+- Dolphin rumble maps to short repeated OpenXR haptic pulses.
+
+Wii motion stays inside Dolphin's emulated HID stack. The input override transforms LOCAL-space
+gravity and controller acceleration into Wii accelerometer axes, transforms angular velocity into
+Dolphin's MotionPlus convention, and feeds both through the existing accelerometer/gyroscope
+groups. The Nunchuk attachment receives the opposite hand's motion override.
+
+IR is absolute: the controller aim ray is intersected with the exact fixed quad pose and dimensions
+used by the cinema renderer. The resulting normalized hit is fed to Dolphin's IR group with a
+short off-screen debounce, so pointing at a visible place on the quad points at that place in-game.
+The screen constants remain shared with quad submission and the emulated game camera remains
+untouched.
+
+Right-handed mode is the default. Advanced users can set `QuestLeftHanded = True` in Dolphin.ini's
+`[Android]` section to swap the primary Wii Remote and Nunchuk motion hands.
+
 ## Session exit and diagnostics
 
 Session state transitions are polled every presented frame. `STOPPING` ends the session;
@@ -199,8 +230,9 @@ Not yet validated in this workspace:
   reaches the presenter.
 - The screen is fixed in `LOCAL` space. Full game-camera orientation/position, world scale, HUD
   handling and culling fixes are later milestones.
-- Touch currently feeds GameCube controller 1 only. Wii Remote motion, hand tracking and haptics are
-  intentionally out of scope.
+- Touch feeds both the original GameCube controller 1 override and the selectable OpenXR Wii
+  Remote/Nunchuk device. Physical Quest testing is still required to tune game-specific motion
+  sensitivity or calibration behaviour.
 - Frame timing is reached through Dolphin's existing presentation cadence. Physical testing should
   verify smooth behaviour at Quest refresh rates and guide any later decoupling.
 - Some games or XFB paths may produce a single-layer texture even with stereoscopy enabled; those
